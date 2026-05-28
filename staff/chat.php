@@ -1042,6 +1042,9 @@ async function sendFile() {
             if (signalPayload.signal_prekey_data) {
                 formData.append('signal_prekey_data', signalPayload.signal_prekey_data);
             }
+            if (signalPayload.ecdh_file_key) {
+                formData.append('encrypted_aes_key', signalPayload.ecdh_file_key);
+            }
         } else {
             formData.append('iv',       legacyIv);
             formData.append('auth_tag', legacyAuthTag);

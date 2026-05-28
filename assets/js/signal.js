@@ -715,6 +715,15 @@ const Signal = (() => {
         const wrapPayload = JSON.stringify({ fk: bufToBase64(FK), fi: fileEnc.iv, fa: fileEnc.authTag });
         const wrapped = await aesEncrypt(mk, enc.encode(wrapPayload), aad);
 
+        // ECDH fallback: encrypt file key with static IK-to-IK shared secret so the
+        // receiver can decrypt even if their Signal session state is lost from IndexedDB.
+        // ECDH(sender_IK_priv, receiver_IK_pub) == ECDH(receiver_IK_priv, sender_IK_pub)
+        const sharedFB   = await dhBits(IK_dh_priv, peerBundle.ik_dh_public);
+        const fbEncKey   = await hkdf(sharedFB, new Uint8Array(32), 'UTHMFileKeyFallback', 32);
+        const fbPayload  = JSON.stringify({ fk: bufToBase64(FK), fi: fileEnc.iv, fa: fileEnc.authTag });
+        const fbEnc      = await aesEncrypt(fbEncKey, enc.encode(fbPayload), new Uint8Array(0));
+        const ecdhFileKey = JSON.stringify({ ct: fbEnc.ciphertext, iv: fbEnc.iv, at: fbEnc.authTag });
+
         await savePersonalSession(myUserId, peerUserId, session);
 
         return {
@@ -723,7 +732,8 @@ const Signal = (() => {
                 iv:                 wrapped.iv,
                 auth_tag:           wrapped.authTag,
                 signal_header:      JSON.stringify(header),
-                signal_prekey_data: pkeyData ? JSON.stringify(pkeyData) : null
+                signal_prekey_data: pkeyData ? JSON.stringify(pkeyData) : null,
+                ecdh_file_key:      ecdhFileKey
             },
             encryptedBuffer: base64ToBuf(fileEnc.ciphertext).buffer,
             fileKeyData:     { fk: bufToBase64(FK), fi: fileEnc.iv, fa: fileEnc.authTag }
@@ -736,26 +746,54 @@ const Signal = (() => {
         let fileKeyData = await getCachedFileKey(myUserId, msg.message_id);
 
         if (!fileKeyData) {
-            // Decrypt the wrapper message to extract file key
-            const wrapJson = await decryptPersonal(myUserId, peerUserId, msg);
-            const wrap     = JSON.parse(wrapJson);
-            fileKeyData    = { fk: wrap.fk, fi: wrap.fi, fa: wrap.fa };
-            await cacheFileKey(myUserId, msg.message_id, fileKeyData);
+            try {
+                // Primary path: Signal double-ratchet wrapper
+                const wrapJson = await decryptPersonal(myUserId, peerUserId, msg);
+                const wrap     = JSON.parse(wrapJson);
+                fileKeyData    = { fk: wrap.fk, fi: wrap.fi, fa: wrap.fa };
+                await cacheFileKey(myUserId, msg.message_id, fileKeyData);
+            } catch (signalErr) {
+                // Fallback: ECDH static key (receiver side only)
+                // Works when Signal session is missing from IndexedDB
+                const ecdhRaw  = msg.encryptedAesKeyJson;
+                const senderIK = msg.senderIKPub;
+                if (!ecdhRaw || !senderIK || msg.isMine) throw signalErr;
+                try {
+                    const { IK_dh_priv } = getIdentitySession();
+                    const sharedFB  = await dhBits(IK_dh_priv, senderIK);
+                    const fbEncKey  = await hkdf(sharedFB, new Uint8Array(32), 'UTHMFileKeyFallback', 32);
+                    const ecdh      = JSON.parse(ecdhRaw);
+                    const fkPlain   = await aesDecrypt(fbEncKey, ecdh.ct, ecdh.iv, ecdh.at, new Uint8Array(0));
+                    fileKeyData     = JSON.parse(dec.decode(fkPlain));
+                    await cacheFileKey(myUserId, msg.message_id, fileKeyData);
+                } catch (_) { throw signalErr; }
+            }
         }
 
         const FK = base64ToBuf(fileKeyData.fk);
         return (await aesDecrypt(FK, bufToBase64(new Uint8Array(encryptedBuffer)), fileKeyData.fi, fileKeyData.fa, new Uint8Array(0))).buffer;
     }
 
-    // Cache file key at load time (called during loadMessages for isMine file messages)
+    // Cache file key at load time (called during loadMessages for receiver's file messages)
     async function cachePersonalFileKey(myUserId, peerUserId, msg) {
         const cached = await getCachedFileKey(myUserId, msg.message_id);
         if (cached) return;
         try {
-            const wrapJson  = await decryptPersonal(myUserId, peerUserId, msg);
-            const wrap      = JSON.parse(wrapJson);
+            const wrapJson = await decryptPersonal(myUserId, peerUserId, msg);
+            const wrap     = JSON.parse(wrapJson);
             await cacheFileKey(myUserId, msg.message_id, { fk: wrap.fk, fi: wrap.fi, fa: wrap.fa });
-        } catch (_) {}
+        } catch (_) {
+            // Signal session unavailable — try ECDH fallback so the key is cached now
+            try {
+                if (!msg.encrypted_aes_key || !msg.sender_ik_dh_public) return;
+                const { IK_dh_priv } = getIdentitySession();
+                const sharedFB  = await dhBits(IK_dh_priv, msg.sender_ik_dh_public);
+                const fbEncKey  = await hkdf(sharedFB, new Uint8Array(32), 'UTHMFileKeyFallback', 32);
+                const ecdh      = JSON.parse(msg.encrypted_aes_key);
+                const fkPlain   = await aesDecrypt(fbEncKey, ecdh.ct, ecdh.iv, ecdh.at, new Uint8Array(0));
+                await cacheFileKey(myUserId, msg.message_id, JSON.parse(dec.decode(fkPlain)));
+            } catch (_) {}
+        }
     }
 
     // ── Sender Key (Group) ────────────────────────────────────────
