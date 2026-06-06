@@ -119,7 +119,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                         </p>
                     </div>
                     <p style='color:#555;font-size:14px;'>
-                        Log in at: <a href='http://localhost/uthm-system/' style='color:#534AB7;'>UTHM Bursary Messaging System</a>
+                        Log in at: <a href='" . $appUrl . "/' style='color:#534AB7;'>UTHM Bursary Messaging System</a>
                     </p>
                     <p style='color:#555;font-size:14px;'>
                         On your first login, the system will automatically activate end-to-end encryption using the
@@ -340,7 +340,7 @@ document.getElementById('registerBtn').addEventListener('click', async () => {
         );
 
         // Step 4: Send keys + all share data to server
-        const apiResponse = await fetch('/uthm-system/api/register_keys.php', {
+        const apiResponse = await fetch((window.__API_BASE || '/api') + '/register_keys.php', {
             method:  'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({

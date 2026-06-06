@@ -90,7 +90,7 @@ if (!empty($_SESSION['is_head_admin'])) {
                             </p>
                         </div>
                         <p style='color:#555;font-size:14px;'>
-                            Log in at: <a href='http://localhost/uthm-system/' style='color:#534AB7;'>UTHM Bursary Messaging System</a>
+                            Log in at: <a href='" . $appUrl . "/' style='color:#534AB7;'>UTHM Bursary Messaging System</a>
                         </p>
                         <hr style='border:none;border-top:1px solid #eee;margin:20px 0;'>
                         <p style='font-size:12px;color:#aaa;text-align:center;margin:0;'>UTHM Bursary Office &bull; Secure Internal Messaging System</p>
@@ -100,7 +100,7 @@ if (!empty($_SESSION['is_head_admin'])) {
                        . "Your password reset has been approved.\n\n"
                        . "Temporary password: your Staff ID + Full Name (no spaces, case-sensitive).\n"
                        . "You must change it on first login.\n\n"
-                       . "Login: http://localhost/uthm-system/\n\nUTHM Bursary Office";
+                       . "Login: {$appUrl}/\n\nUTHM Bursary Office";
                 sendEmail($req['email'], $req['name'], 'UTHM Bursary — Password Reset Approved', $html_body, $plain);
             } catch (Exception $e) {
                 error_log('Admin reset approval email failed: ' . $e->getMessage());

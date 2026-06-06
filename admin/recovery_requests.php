@@ -595,7 +595,7 @@ document.getElementById('execute-recovery-btn').addEventListener('click', async 
     try {
         // Step 1: Fetch server shares via PHP
         setProgress(20, 'Fetching key shares from server...');
-        const recoverRes = await fetch('/uthm-system/api/admin_recover.php', {
+        const recoverRes = await fetch((window.__API_BASE || '/api') + '/admin_recover.php', {
             method:  'POST',
             headers: { 'Content-Type': 'application/json' },
             body:    JSON.stringify({
@@ -640,7 +640,7 @@ document.getElementById('execute-recovery-btn').addEventListener('click', async 
 
         // Step 6: Save everything to server
         setProgress(90, 'Saving new keys and shares to server...');
-        const saveRes = await fetch('/uthm-system/api/save_recovered_keys.php', {
+        const saveRes = await fetch((window.__API_BASE || '/api') + '/save_recovered_keys.php', {
             method:  'POST',
             headers: { 'Content-Type': 'application/json' },
             body:    JSON.stringify({

@@ -130,7 +130,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         </div>
                         <p style='color:#555;font-size:14px;'>
                             Log in at:
-                            <a href='http://localhost/uthm-system/' style='color:#534AB7;'>
+                            <a href='" . $appUrl . "/' style='color:#534AB7;'>
                                 UTHM Bursary Messaging System
                             </a>
                         </p>

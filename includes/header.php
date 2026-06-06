@@ -100,19 +100,15 @@ if (isset($_SESSION['user_id'], $_SESSION['role'], $pdo) && $_SESSION['role'] ==
     <script src="<?php echo $base; ?>assets/js/crypto.js"></script>
     <script src="<?php echo $base; ?>assets/js/sss.js"></script>
     <script src="<?php echo $base; ?>assets/js/signal.js"></script>
-    <?php if (isset($_SESSION['user_id']) && $_SESSION['role'] === 'staff'): ?>
     <script>
-        window.__STAFF_USER_ID = <?php echo intval($_SESSION['user_id']); ?>;
-        window.__API_BASE = '/uthm-system/api';
-        window.__APP_BASE = '/uthm-system';
+        window.__APP_BASE = '<?= $basePath ?>';
+        window.__API_BASE = '<?= $apiBase ?>';
     </script>
+    <?php if (isset($_SESSION['user_id']) && $_SESSION['role'] === 'staff'): ?>
+    <script>window.__STAFF_USER_ID = <?php echo intval($_SESSION['user_id']); ?>;</script>
     <?php endif; ?>
     <?php if (isset($_SESSION['user_id']) && $_SESSION['role'] === 'admin'): ?>
-    <script>
-        window.__ADMIN_USER_ID = <?php echo intval($_SESSION['user_id']); ?>;
-        window.__API_BASE = '/uthm-system/api';
-        window.__APP_BASE = '/uthm-system';
-    </script>
+    <script>window.__ADMIN_USER_ID = <?php echo intval($_SESSION['user_id']); ?>;</script>
     <?php endif; ?>
     <script src="<?php echo $base; ?>assets/js/session.js"></script>
     <?php if (isset($_SESSION['user_id'])): ?>
@@ -248,7 +244,7 @@ if (isset($_SESSION['user_id'], $_SESSION['role'], $pdo) && $_SESSION['role'] ==
               </div>
             <?php else: ?>
               <?php foreach ($_notif_items as $_ni): ?>
-              <a href="/uthm-system/staff/chat.php?type=<?php echo htmlspecialchars($_ni['chat_type']); ?>&id=<?php echo intval($_ni['chat_id']); ?>"
+              <a href="<?= $basePath ?>/staff/chat.php?type=<?php echo htmlspecialchars($_ni['chat_type']); ?>&id=<?php echo intval($_ni['chat_id']); ?>"
                  class="notif-item">
                 <div class="notif-avatar <?php echo $_ni['chat_type'] === 'group' ? 'notif-avatar--group' : ''; ?>">
                   <?php echo mb_strtoupper(mb_substr($_ni['chat_name'], 0, 1)); ?>

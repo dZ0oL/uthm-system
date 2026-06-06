@@ -52,7 +52,7 @@
                 var groupCls  = n.chat_type === 'group' ? ' notif-avatar--group' : '';
                 var count     = parseInt(n.unread_count, 10);
                 var countLbl  = count + ' unread message' + (count !== 1 ? 's' : '');
-                var href      = '/uthm-system/staff/chat.php?type=' +
+                var href      = (window.__APP_BASE || '') + '/staff/chat.php?type=' +
                                 encodeURIComponent(n.chat_type) + '&id=' +
                                 encodeURIComponent(n.chat_id);
                 html +=
@@ -69,7 +69,7 @@
         }
 
         function loadNotifications() {
-            var apiBase = (window.__API_BASE || '/uthm-system/api');
+            var apiBase = (window.__API_BASE || '/api');
             if (notifList) {
                 notifList.innerHTML =
                     '<div class="notif-empty" style="padding:20px 16px;">' +

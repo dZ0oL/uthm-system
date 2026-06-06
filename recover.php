@@ -135,7 +135,7 @@ include 'includes/header.php';
 </div>
 
 <script>
-const API_BASE = '/uthm-system/api';
+const API_BASE = window.__API_BASE || '/api';
 let   currentEmail = '';
 
 // ── Step 1: Send OTP ─────────────────────────────────────────

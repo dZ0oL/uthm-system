@@ -122,7 +122,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     try {
         status.textContent = 'Fetching encryption keys...';
-        const keyResponse  = await fetch('/uthm-system/api/get_user_keys.php');
+        const keyResponse  = await fetch((window.__API_BASE || '/api') + '/get_user_keys.php');
         const keyData      = await keyResponse.json();
 
         if (!keyData.success) {
@@ -147,7 +147,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         if (!hasShare) {
             status.textContent = 'Registering this device...';
-            const shareRes  = await fetch('/uthm-system/api/get_device_share.php');
+            const shareRes  = await fetch((window.__API_BASE || '/api') + '/get_device_share.php');
             const shareData = await shareRes.json();
 
             if (shareData.success) {

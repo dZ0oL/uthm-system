@@ -16,8 +16,8 @@
     var isAdmin = typeof window.__ADMIN_USER_ID !== 'undefined';
     if (!isStaff && !isAdmin) return;
 
-    var apiBase = window.__API_BASE || '/uthm-system/api';
-    var appBase = window.__APP_BASE || '/uthm-system';
+    var apiBase = window.__API_BASE || '/api';
+    var appBase = window.__APP_BASE || '';
 
     var es             = null;
     var reconnectTimer = null;

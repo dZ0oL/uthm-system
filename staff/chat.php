@@ -423,7 +423,7 @@ const CHAT_CONFIG = {
     myPublicKey: <?php echo json_encode($my_public_key); ?>,
     chatType:    <?php echo json_encode($current_chat_type); ?>,
     chatId:      <?php echo intval($current_chat_id); ?>,
-    apiBase:     window.__API_BASE || '/uthm-system/api',
+    apiBase:     window.__API_BASE || '/api',
     // Peer's legacy ECDH public key — used as fallback when Signal session is lost
     peerEcdhKey: <?php echo json_encode(
         $current_chat_type === 'personal' && $chat_info

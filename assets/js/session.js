@@ -38,7 +38,7 @@
 // Shows a clean overlay message before redirecting.
 async function checkSessionValidity() {
     try {
-        const apiBase = window.__API_BASE || '/uthm-system/api';
+        const apiBase = window.__API_BASE || '/api';
         const res     = await fetch(apiBase + '/check_session.php');
         const data    = await res.json();
 
@@ -59,13 +59,13 @@ async function checkSessionValidity() {
                 );
             } else {
                 // Generic reason — redirect silently
-                window.location.href = '/uthm-system/index.php';
+                window.location.href = (window.__APP_BASE || '') + '/index.php';
                 return;
             }
 
             // Delay redirect so user can read the message
             setTimeout(() => {
-                window.location.href = '/uthm-system/index.php';
+                window.location.href = (window.__APP_BASE || '') + '/index.php';
             }, 3000);
         }
     } catch (err) {
@@ -128,7 +128,7 @@ function showSessionMessage(title, message, type) {
 
 async function unlockKey(staffUserId, password) {
     try {
-        const apiBase = window.__API_BASE || '/uthm-system/api';
+        const apiBase = window.__API_BASE || '/api';
         const response = await fetch(apiBase + '/get_user_keys.php');
 
         if (!response.ok) {

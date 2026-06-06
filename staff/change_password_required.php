@@ -161,7 +161,7 @@ include '../includes/header.php';
 
 <script>
 const USER_ID  = <?php echo intval($user_id); ?>;
-const API_BASE = '/uthm-system/api';
+const API_BASE = window.__API_BASE || '/api';
 
 document.getElementById('new-pw').addEventListener('input', function () {
     const pw  = this.value;

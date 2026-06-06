@@ -25,6 +25,24 @@ try {
 
 session_start();
 
+// ── App base-path helpers ─────────────────────────────────────
+// Computes the URL prefix of the app root regardless of whether it is
+// mounted at /uthm-system/ (Laragon) or / (VPS).
+// Available as $basePath, $apiBase, and $appUrl in every file that
+// includes config/database.php.
+$_script  = $_SERVER['SCRIPT_NAME'] ?? '';
+if (strpos($_script, '/admin/') !== false ||
+    strpos($_script, '/staff/') !== false ||
+    strpos($_script, '/api/')   !== false) {
+    $basePath = rtrim(dirname(dirname($_script)), '/');
+} else {
+    $basePath = rtrim(dirname($_script), '/');
+}
+$apiBase = $basePath . '/api';
+$appUrl  = ((isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? 'https' : 'http')
+         . '://' . ($_SERVER['HTTP_HOST'] ?? 'localhost') . $basePath;
+unset($_script);
+
 // ── CSRF helpers ──────────────────────────────────────────────
 // Call csrf_field() inside every HTML form to embed the hidden token.
 // Call csrf_verify() at the top of every POST handler to reject forgeries.
