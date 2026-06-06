@@ -1,0 +1,11 @@
+# Environment-specific config — never commit real credentials
+config/database.php
+config/email.php
+
+# Dependencies
+vendor/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
