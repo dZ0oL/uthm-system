@@ -11,10 +11,24 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] != 'admin') {
 
 // POST: edit user info (name, staff_id, department)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'edit_user') {
+    csrf_verify();
+
     $target_id  = intval($_POST['user_id'] ?? 0);
     $name       = trim($_POST['name'] ?? '');
     $staff_id   = trim($_POST['staff_id'] ?? '');
     $department = trim($_POST['department'] ?? '');
+
+    $edit_errors = [];
+    if (empty($name))              $edit_errors[] = 'Name is required';
+    elseif (strlen($name) > 100)   $edit_errors[] = 'Name must not exceed 100 characters';
+    if (empty($staff_id))          $edit_errors[] = 'Staff ID is required';
+    elseif (strlen($staff_id) > 50) $edit_errors[] = 'Staff ID must not exceed 50 characters';
+    if (strlen($department) > 100) $edit_errors[] = 'Department must not exceed 100 characters';
+
+    if (!empty($edit_errors) || !$target_id) {
+        header('Location: manage_users.php?edit_error=invalid');
+        exit;
+    }
 
     if ($name && $staff_id && $target_id) {
         // Normal admin can only edit staff — HOA can edit anyone
@@ -84,6 +98,13 @@ if (isset($_GET['action'])) {
             $pdo->prepare("INSERT INTO audit_logs (user_id, action, details) VALUES (?, 'Deactivate User', ?)")
                 ->execute([$_SESSION['user_id'], "Deactivated user_id: $user_id_action"]);
             break;
+
+        case 'unlock':
+            $pdo->prepare("UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE user_id = ?")
+                ->execute([$user_id_action]);
+            $pdo->prepare("INSERT INTO audit_logs (user_id, action, details) VALUES (?, 'Unlock Account', ?)")
+                ->execute([$_SESSION['user_id'], "Manually unlocked account for user_id: $user_id_action"]);
+            break;
     }
 
     header("Location: manage_users.php");
@@ -102,6 +123,11 @@ $stmt = $pdo->query("
     ORDER BY COALESCE(u.is_head_admin,0) DESC, FIELD(u.role,'admin','staff'), u.staff_id ASC
 ");
 $users = $stmt->fetchAll();
+
+$now = new DateTime();
+$locked_count = count(array_filter($users, function($u) use ($now) {
+    return !empty($u['locked_until']) && new DateTime($u['locked_until']) > $now;
+}));
 
 $page_title = 'Manage Users';
 include '../includes/header.php';
@@ -148,6 +174,13 @@ include '../includes/header.php';
             <div class="stat-label">Admin</div>
         </div>
     </div>
+    <div class="stat-card">
+        <div class="stat-icon" style="background:#fef3c7;"><i data-lucide="lock" style="color:#92400e;"></i></div>
+        <div>
+            <div class="stat-value"><?php echo $locked_count; ?></div>
+            <div class="stat-label">Locked</div>
+        </div>
+    </div>
 </div>
 
 <!-- Search bar — full width, matching the card below -->
@@ -178,6 +211,7 @@ include '../includes/header.php';
                                     <th>Groups</th>
                                     <th>Messages</th>
                                     <th>Status</th>
+                                    <th>Failed Attempts</th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
@@ -220,11 +254,25 @@ include '../includes/header.php';
                                                 <?php echo $user['message_count']; ?>
                                             </span>
                                         </td>
+                                        <?php
+                                            $user_is_locked = !empty($user['locked_until']) && new DateTime($user['locked_until']) > $now;
+                                        ?>
                                         <td>
-                                            <?php if ($user['status'] === 'active'): ?>
-                                                <span style="display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:600;background:#dcfce7;color:#166534;border:1px solid #bbf7d0;">Active</span>
-                                            <?php else: ?>
+                                            <?php if ($user['status'] === 'inactive'): ?>
                                                 <span style="display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:600;background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;">Inactive</span>
+                                            <?php elseif ($user_is_locked): ?>
+                                                <span style="display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:600;background:#fef3c7;color:#92400e;border:1px solid #fde68a;" title="Locked until <?php echo htmlspecialchars($user['locked_until']); ?>"><i class="fas fa-lock me-1" style="font-size:10px;"></i>Locked</span>
+                                            <?php else: ?>
+                                                <span style="display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:600;background:#dcfce7;color:#166534;border:1px solid #bbf7d0;">Active</span>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td>
+                                            <?php if ($user_is_locked): ?>
+                                                <span style="font-size:12px;font-weight:600;color:#b91c1c;"><?php echo intval($user['failed_login_attempts']); ?></span>
+                                            <?php elseif ($user['failed_login_attempts'] > 0): ?>
+                                                <span style="font-size:12px;color:#92400e;"><?php echo intval($user['failed_login_attempts']); ?></span>
+                                            <?php else: ?>
+                                                <span style="font-size:12px;color:#94a3b8;">0</span>
                                             <?php endif; ?>
                                         </td>
                                         <td>
@@ -248,29 +296,40 @@ include '../includes/header.php';
                                                 <span style="font-size:12px;color:#94a3b8;font-weight:500;">
                                                     <i class="fas fa-crown" style="color:#f59e0b;"></i> HOA Only
                                                 </span>
-                                            <?php elseif ($user['status'] == 'active'): ?>
-                                                <a href="manage_users.php?action=deactivate&id=<?php echo $user['user_id']; ?>"
-                                                   onclick="event.preventDefault(); appConfirm('Deactivate Account','<?php echo htmlspecialchars($user['name'], ENT_QUOTES); ?> will no longer be able to log in.','danger','Deactivate',()=>location.href=this.href);"
-                                                   class="btn btn-sm"
-                                                   style="background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;border-radius:6px;font-size:12px;font-weight:500;"
-                                                   title="Deactivate">
-                                                    <i class="fas fa-user-slash me-1"></i>Deactivate
-                                                </a>
                                             <?php else: ?>
-                                                <a href="manage_users.php?action=activate&id=<?php echo $user['user_id']; ?>"
-                                                   onclick="event.preventDefault(); appConfirm('Activate Account','Restore login access for <?php echo htmlspecialchars($user['name'], ENT_QUOTES); ?>?','success','Activate',()=>location.href=this.href);"
-                                                   class="btn btn-sm"
-                                                   style="background:#dcfce7;color:#166534;border:1px solid #bbf7d0;border-radius:6px;font-size:12px;font-weight:500;"
-                                                   title="Activate">
-                                                    <i class="fas fa-user-check me-1"></i>Activate
-                                                </a>
+                                                <?php if ($user_is_locked): ?>
+                                                    <a href="manage_users.php?action=unlock&id=<?php echo $user['user_id']; ?>"
+                                                       onclick="event.preventDefault(); appConfirm('Unlock Account','Remove the login lockout for <?php echo htmlspecialchars($user['name'], ENT_QUOTES); ?> and reset their failed attempt counter?','success','Unlock',()=>location.href=this.href);"
+                                                       class="btn btn-sm"
+                                                       style="background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:6px;font-size:12px;font-weight:500;"
+                                                       title="Unlock account">
+                                                        <i class="fas fa-lock-open me-1"></i>Unlock
+                                                    </a>
+                                                <?php endif; ?>
+                                                <?php if ($user['status'] == 'active'): ?>
+                                                    <a href="manage_users.php?action=deactivate&id=<?php echo $user['user_id']; ?>"
+                                                       onclick="event.preventDefault(); appConfirm('Deactivate Account','<?php echo htmlspecialchars($user['name'], ENT_QUOTES); ?> will no longer be able to log in.','danger','Deactivate',()=>location.href=this.href);"
+                                                       class="btn btn-sm"
+                                                       style="background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;border-radius:6px;font-size:12px;font-weight:500;"
+                                                       title="Deactivate">
+                                                        <i class="fas fa-user-slash me-1"></i>Deactivate
+                                                    </a>
+                                                <?php else: ?>
+                                                    <a href="manage_users.php?action=activate&id=<?php echo $user['user_id']; ?>"
+                                                       onclick="event.preventDefault(); appConfirm('Activate Account','Restore login access for <?php echo htmlspecialchars($user['name'], ENT_QUOTES); ?>?','success','Activate',()=>location.href=this.href);"
+                                                       class="btn btn-sm"
+                                                       style="background:#dcfce7;color:#166534;border:1px solid #bbf7d0;border-radius:6px;font-size:12px;font-weight:500;"
+                                                       title="Activate">
+                                                        <i class="fas fa-user-check me-1"></i>Activate
+                                                    </a>
+                                                <?php endif; ?>
                                             <?php endif; ?>
                                             </div>
                                         </td>
                                     </tr>
                                 <?php endforeach; ?>
                                 <tr id="noUserResults" style="display:none;">
-                                    <td colspan="9" class="text-center text-muted py-4">
+                                    <td colspan="10" class="text-center text-muted py-4">
                                         <i class="fas fa-search me-1"></i> No users match your search.
                                     </td>
                                 </tr>
@@ -304,6 +363,10 @@ include '../includes/header.php';
                     — Head of Admin
                 </span>
                 <span style="display:inline-flex;align-items:center;gap:5px;">
+                    <span style="display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:600;background:#fef3c7;color:#92400e;border:1px solid #fde68a;"><i class="fas fa-lock" style="font-size:10px;"></i> Locked</span>
+                    — Temporarily blocked after too many failed login attempts
+                </span>
+                <span style="display:inline-flex;align-items:center;gap:5px;">
                     <i class="fas fa-crown" style="color:#f59e0b;"></i> HOA Only — Action restricted to Head Admin
                 </span>
             </div>
@@ -317,6 +380,7 @@ include '../includes/header.php';
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <form method="POST">
+                <?php echo csrf_field(); ?>
                 <input type="hidden" name="action" value="edit_user">
                 <input type="hidden" name="user_id" id="editUserId">
                 <div class="modal-body" style="padding:8px 24px;">

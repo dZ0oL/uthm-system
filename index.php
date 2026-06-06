@@ -4,55 +4,92 @@
 // ======================
 require_once 'config/database.php';
 
-$error = '';
+$error      = '';
+$error_type = 'danger';
+
+define('LOGIN_MAX_ATTEMPTS', 5);
+define('LOGIN_LOCKOUT_MINUTES', 5);
 
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+    csrf_verify();
+
     $email    = $_POST['email'];
     $password = $_POST['password'];
 
-    // Check user exists regardless of status first
     $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ?");
     $stmt->execute([$email]);
     $user = $stmt->fetch();
 
-    if ($user && password_verify($password, $user['password'])) {
-        // Password correct — now check account status
-        if ($user['status'] === 'inactive') {
-            $error = 'Your account has been deactivated. Please contact your administrator.';
-        } else {
-            // Active account — proceed with login
-            $_SESSION['user_id']   = $user['user_id'];
-            $_SESSION['name']      = $user['name'];
-            $_SESSION['role']      = $user['role'];
-            $_SESSION['password_change_required'] = ($user['password_change_required'] == 1);
-            $_SESSION['is_head_admin'] = !empty($user['is_head_admin']);
-
-            // Generate new session token — invalidates all other devices
-            $session_token = bin2hex(random_bytes(32));
-            $_SESSION['session_token'] = $session_token;
-
-            // Save token to DB — overwrites any previous device's token
-            $pdo->prepare("
-                UPDATE users SET session_token = ? WHERE user_id = ?
-            ")->execute([$session_token, $user['user_id']]);
-
-            $log_stmt = $pdo->prepare("
-                INSERT INTO audit_logs (user_id, action, details, ip_address)
-                VALUES (?, 'Login', ?, ?)
-            ");
-            $log_stmt->execute([
-                $user['user_id'],
-                'New session started — previous device sessions invalidated',
-                $_SERVER['REMOTE_ADDR']
-            ]);
-
-            if ($user['role'] == 'admin') {
-                header('Location: admin/dashboard.php');
-                exit;
-    }
-}
-    } else {
+    if (!$user) {
         $error = 'Invalid email or password.';
+    } else {
+        $now        = new DateTime();
+        $is_locked  = !empty($user['locked_until']) && new DateTime($user['locked_until']) > $now;
+
+        if ($is_locked) {
+            $diff              = $now->diff(new DateTime($user['locked_until']));
+            $minutes_remaining = $diff->h * 60 + $diff->i + ($diff->s > 0 ? 1 : 0);
+            $error      = "Account temporarily locked due to too many failed login attempts. Try again in {$minutes_remaining} minute(s), or contact your administrator.";
+            $error_type = 'warning';
+
+        } elseif (password_verify($password, $user['password'])) {
+            if ($user['status'] === 'inactive') {
+                $error      = 'Your account has been deactivated. Please contact your administrator.';
+                $error_type = 'warning';
+            } else {
+                // Successful login — clear lockout state
+                $pdo->prepare("UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE user_id = ?")
+                    ->execute([$user['user_id']]);
+
+                $_SESSION['user_id']   = $user['user_id'];
+                $_SESSION['name']      = $user['name'];
+                $_SESSION['role']      = $user['role'];
+                $_SESSION['password_change_required'] = $user['password_change_required'] == 1;
+                $_SESSION['is_head_admin'] = !empty($user['is_head_admin']);
+
+                $session_token = bin2hex(random_bytes(32));
+                $_SESSION['session_token'] = $session_token;
+
+                $pdo->prepare("UPDATE users SET session_token = ? WHERE user_id = ?")
+                    ->execute([$session_token, $user['user_id']]);
+
+                $log_stmt = $pdo->prepare("
+                    INSERT INTO audit_logs (user_id, action, details, ip_address)
+                    VALUES (?, 'Login', ?, ?)
+                ");
+                $log_stmt->execute([
+                    $user['user_id'],
+                    'New session started — previous device sessions invalidated',
+                    $_SERVER['REMOTE_ADDR']
+                ]);
+
+                if ($user['role'] == 'admin') {
+                    header('Location: admin/dashboard.php');
+                    exit;
+                }
+            }
+        } else {
+            // Wrong password — count against the lockout threshold.
+            // If the previous lock already expired, reset the counter to 1.
+            $lock_expired    = !empty($user['locked_until']) && new DateTime($user['locked_until']) <= $now;
+            $base_attempts   = $lock_expired ? 0 : $user['failed_login_attempts'];
+            $new_attempts    = $base_attempts + 1;
+
+            if ($new_attempts >= LOGIN_MAX_ATTEMPTS) {
+                $pdo->prepare("UPDATE users SET failed_login_attempts = ?, locked_until = DATE_ADD(NOW(), INTERVAL " . LOGIN_LOCKOUT_MINUTES . " MINUTE) WHERE user_id = ?")
+                    ->execute([$new_attempts, $user['user_id']]);
+                $pdo->prepare("INSERT INTO audit_logs (user_id, action, details, ip_address) VALUES (?, 'Account Locked', ?, ?)")
+                    ->execute([$user['user_id'], "Account locked after {$new_attempts} consecutive failed login attempts", $_SERVER['REMOTE_ADDR'] ?? null]);
+                $error      = "Too many failed login attempts. Your account has been locked for " . LOGIN_LOCKOUT_MINUTES . " minutes.";
+                $error_type = 'danger';
+            } else {
+                $pdo->prepare("UPDATE users SET failed_login_attempts = ?, locked_until = NULL WHERE user_id = ?")
+                    ->execute([$new_attempts, $user['user_id']]);
+                $remaining  = LOGIN_MAX_ATTEMPTS - $new_attempts;
+                $error      = "Invalid email or password. {$remaining} attempt(s) remaining before account lockout.";
+                $error_type = 'danger';
+            }
+        }
     }
 }
 
@@ -175,12 +212,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 <div class="login-form-box">
 
                 <?php if ($error): ?>
-                    <div class="alert alert-<?php echo strpos($error, 'deactivated') !== false ? 'warning' : 'danger'; ?> mb-4">
+                    <div class="alert alert-<?php echo $error_type; ?> mb-4">
                         <?php echo htmlspecialchars($error); ?>
                     </div>
                 <?php endif; ?>
 
                 <form method="POST" id="loginForm">
+                    <?php echo csrf_field(); ?>
                     <div class="mb-3">
                         <label class="form-label" style="font-size:13px;font-weight:500;color:#475569;">Email Address</label>
                         <input type="email" name="email" class="form-control"

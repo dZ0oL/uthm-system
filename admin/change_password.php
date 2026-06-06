@@ -13,6 +13,7 @@ $error   = '';
 $success = false;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    csrf_verify();
     $current = $_POST['current_password'] ?? '';
     $new_pw  = $_POST['new_password']     ?? '';
     $confirm = $_POST['confirm_password'] ?? '';
@@ -70,6 +71,7 @@ include '../includes/header.php';
         <div class="card">
             <div class="card-body">
                 <form method="POST" autocomplete="off">
+                    <?php echo csrf_field(); ?>
                     <div class="mb-3">
                         <label class="form-label">Current Password</label>
                         <input type="password" name="current_password" class="form-control"

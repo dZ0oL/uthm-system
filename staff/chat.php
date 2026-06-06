@@ -630,7 +630,11 @@ async function loadMessages() {
             const isSignal  = !!msg.signal_header;
             let   text      = '';
 
-            if (_decryptFailed.has(msg.message_id)) {
+            // Personal message failures are permanent (session loss can't self-heal).
+            // Group message failures are skipped here and retried every poll —
+            // the sender key may become available after a race condition or redistribution.
+            const isGroup = CHAT_CONFIG.chatType === 'group';
+            if (_decryptFailed.has(msg.message_id) && !isGroup) {
                 rendered.push({ msg, text: '[Decryption error]', isMine, isFile });
                 continue;
             }

@@ -22,6 +22,8 @@ $message = '';
 $success = false;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    csrf_verify();
+
     $name            = trim($_POST['name']       ?? '');
     $staff_id        = trim($_POST['staff_id']   ?? '');
     $email           = trim($_POST['email']      ?? '');
@@ -34,12 +36,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errors[] = 'Incorrect master password.';
     }
 
-    if (empty($name) || empty($staff_id) || empty($email)) {
-        $errors[] = 'All fields are required.';
+    if (empty($name)) {
+        $errors[] = 'Full name is required.';
+    } elseif (strlen($name) > 100) {
+        $errors[] = 'Full name must not exceed 100 characters.';
     }
 
-    if (!empty($email) && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+    if (empty($staff_id)) {
+        $errors[] = 'Staff ID is required.';
+    } elseif (strlen($staff_id) > 50) {
+        $errors[] = 'Staff ID must not exceed 50 characters.';
+    }
+
+    if (empty($email)) {
+        $errors[] = 'Email is required.';
+    } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $errors[] = 'Invalid email format.';
+    } elseif (strlen($email) > 120) {
+        $errors[] = 'Email must not exceed 120 characters.';
     }
 
     if (empty($errors)) {
@@ -139,7 +153,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 error_log('Admin welcome email failed: ' . $e->getMessage());
             }
 
-            $message = "Admin account for '$name' created successfully!";
+            $message = "Admin account for '" . htmlspecialchars($name) . "' created successfully!";
             $success = true;
             $_POST   = [];
 
@@ -185,6 +199,7 @@ include '../includes/header.php';
                     </div>
                     <div class="card-body">
                         <form method="POST" autocomplete="off">
+                            <?php echo csrf_field(); ?>
 
                             <div class="row">
                                 <div class="col-md-6 mb-3">

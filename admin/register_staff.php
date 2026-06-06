@@ -10,39 +10,64 @@ $message = '';
 $success = false;
 
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+    csrf_verify();
+
     $name       = trim($_POST['name']       ?? '');
     $staff_id   = trim($_POST['staff_id']   ?? '');
     $email      = trim($_POST['email']      ?? '');
     $department = trim($_POST['department'] ?? '');
     $is_fetch   = isset($_POST['crypto_done']);
 
+    $allowed_departments = ['Finance', 'Payroll', 'Audit', 'HR', 'IT'];
+
     // Temp password: staffId + name with spaces removed (same pattern as recovery)
     $temp_password = $staff_id . preg_replace('/\s+/', '', $name);
 
     $errors = [];
 
+    if (empty($name)) {
+        $errors[] = 'Full name is required';
+    } elseif (strlen($name) > 100) {
+        $errors[] = 'Full name must not exceed 100 characters';
+    }
+
+    if (empty($staff_id)) {
+        $errors[] = 'Staff ID is required';
+    } elseif (strlen($staff_id) > 50) {
+        $errors[] = 'Staff ID must not exceed 50 characters';
+    }
+
     if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $errors[] = 'Invalid email format';
+    } elseif (strlen($email) > 120) {
+        $errors[] = 'Email must not exceed 120 characters';
     }
     // Temporarily disabled for email testing
     //if (!str_ends_with($email, '@uthm.edu.my')) {
     //    $errors[] = 'Email must be a UTHM email address (@uthm.edu.my)';
     //}
 
-    $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM users WHERE email = ?");
-    $stmt->execute([$email]);
-    if ($stmt->fetch()['count'] > 0) {
-        $errors[] = 'Email already registered';
+    if (!in_array($department, $allowed_departments, true)) {
+        $errors[] = 'Invalid department selected';
     }
 
-    $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM users WHERE staff_id = ?");
-    $stmt->execute([$staff_id]);
-    if ($stmt->fetch()['count'] > 0) {
-        $errors[] = 'Staff ID already exists';
+    if (empty($errors)) {
+        $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM users WHERE email = ?");
+        $stmt->execute([$email]);
+        if ($stmt->fetch()['count'] > 0) {
+            $errors[] = 'Email already registered';
+        }
+
+        $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM users WHERE staff_id = ?");
+        $stmt->execute([$staff_id]);
+        if ($stmt->fetch()['count'] > 0) {
+            $errors[] = 'Staff ID already exists';
+        }
     }
 
     if (empty($errors)) {
         $hashed_password = password_hash($temp_password, PASSWORD_DEFAULT);
+
 
         $stmt = $pdo->prepare("
             INSERT INTO users (name, email, password, role, staff_id, department, password_change_required)
@@ -130,7 +155,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             exit;
         }
 
-        $message = "Staff member '$name' registered successfully!";
+        $message = "Staff member '" . htmlspecialchars($name) . "' registered successfully!";
         $success = true;
         $_POST   = [];
 
@@ -174,6 +199,7 @@ include '../includes/header.php';
                         </div>
                         <div class="card-body">
                             <form method="POST">
+                                <?php echo csrf_field(); ?>
 
                                 <div class="row">
                                     <div class="col-md-6 mb-3">

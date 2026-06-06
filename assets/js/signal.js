@@ -978,10 +978,11 @@ const Signal = (() => {
         try {
             text = await skDecrypt(skState, msg);
         } catch (_) {
-            // IDB state may be stale (e.g. sender re-generated their key).
-            // Fetch the latest distribution from the server and retry once.
+            // IDB state is stale (e.g. sender regenerated their key after account recovery).
+            // Delete the cached state and fetch the latest distribution from server, then retry.
+            await idbDelete('sender_keys', `${groupId}_${senderId}`);
             const freshState = await fetchAndSetSenderKey(myUserId, groupId, senderId, senderIKPub, apiBase);
-            if (!freshState) throw new Error('Sender key not available — cannot decrypt group message');
+            if (!freshState) throw new Error('Sender key not available — ask sender to send a new message');
             text = await skDecrypt(freshState, msg);
             await saveSenderKeyToIDB(groupId, senderId, freshState);
             await cacheDecrypted(myUserId, msg.message_id, text);

@@ -759,7 +759,9 @@ CREATE TABLE `users` (
   `key_hash` varchar(64) COLLATE utf8mb4_general_ci DEFAULT NULL,
   `password_change_required` tinyint(1) NOT NULL DEFAULT '0' COMMENT '1 = must change password on next login',
   `is_head_admin` tinyint(1) NOT NULL DEFAULT '0',
-  `session_token` varchar(64) COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT 'Current active session token — changes on every new login'
+  `session_token` varchar(64) COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT 'Current active session token — changes on every new login',
+  `failed_login_attempts` int NOT NULL DEFAULT '0',
+  `locked_until` datetime DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
