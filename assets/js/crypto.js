@@ -42,7 +42,13 @@ const UTHMCrypto = (() => {
   // ================================================================
 
   function bufToBase64(buf) {
-    return btoa(String.fromCharCode(...new Uint8Array(buf)));
+    const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+    let binary = '';
+    const CHUNK = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + CHUNK, bytes.length)));
+    }
+    return btoa(binary);
   }
 
   function base64ToBuf(b64) {

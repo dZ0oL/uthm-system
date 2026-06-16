@@ -31,7 +31,13 @@ const Signal = (() => {
     // ── Utilities ────────────────────────────────────────────────
 
     function bufToBase64(buf) {
-        return btoa(String.fromCharCode(...new Uint8Array(buf)));
+        const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+        let binary = '';
+        const CHUNK = 0x8000;
+        for (let i = 0; i < bytes.length; i += CHUNK) {
+            binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + CHUNK, bytes.length)));
+        }
+        return btoa(binary);
     }
 
     function base64ToBuf(b64) {
@@ -92,7 +98,11 @@ const Signal = (() => {
     // AES-256-GCM decrypt: returns Uint8Array
     async function aesDecrypt(keyBytes, ciphertext_b64, iv_b64, authTag_b64, aad) {
         const k        = await crypto.subtle.importKey('raw', keyBytes, { name: AES_MODE }, false, ['decrypt']);
-        const combined = new Uint8Array([...base64ToBuf(ciphertext_b64), ...base64ToBuf(authTag_b64)]);
+        const _ct = base64ToBuf(ciphertext_b64);
+        const _at = base64ToBuf(authTag_b64);
+        const combined = new Uint8Array(_ct.length + _at.length);
+        combined.set(_ct);
+        combined.set(_at, _ct.length);
         try {
             const buf = await crypto.subtle.decrypt(
                 { name: AES_MODE, iv: base64ToBuf(iv_b64), additionalData: aad || new Uint8Array(0) },

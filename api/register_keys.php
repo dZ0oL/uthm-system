@@ -153,17 +153,10 @@ try {
     $pdo->commit();
 
     // 5. Now save shares 3 and 4 to secure DB
-    // Separate connection — different database, different credentials
-    $secure_host   = 'localhost';
-    $secure_dbname = 'uthm_messaging_secure';
-    $secure_user   = 'root';   // In production: use a different DB user
-    $secure_pass   = '';
-
     try {
         $pdo_secure = new PDO(
-            'mysql:host=localhost;dbname=uthm_messaging_secure;charset=utf8mb4',
-            'root',
-            ''
+            "mysql:host=$host;dbname=uthm_messaging_secure;charset=utf8mb4",
+            $username, $password
         );
         $pdo_secure->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 

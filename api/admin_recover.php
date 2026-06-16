@@ -92,9 +92,8 @@ try {
 
     // ── Step 2: Fetch shares 3 and 4 from secure DB ──────────
     $pdo_secure = new PDO(
-        'mysql:host=localhost;dbname=uthm_messaging_secure;charset=utf8mb4',
-        'root',
-        ''
+        "mysql:host=$host;dbname=uthm_messaging_secure;charset=utf8mb4",
+        $username, $password
     );
     $pdo_secure->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
