@@ -713,16 +713,27 @@ const Signal = (() => {
             pkeyData   = { ik_dh_pub: IK_dh_pub_jwk, ek_pub: x3dh.EK_pub_jwk, spk_id: x3dh.spk_id, opk_id: x3dh.opk_id };
         }
 
-        // Random file key for the actual file bytes
-        const FK       = randomBytes(32);
-        const fileEnc  = await aesEncrypt(FK, fileBuffer, new Uint8Array(0));
+        // Encrypt file directly via Web Crypto API — no base64 roundtrip on large buffers
+        const FK      = randomBytes(32);
+        const fileIv  = randomBytes(IV_LEN);
+        const fileKey = await crypto.subtle.importKey('raw', FK, { name: AES_MODE }, false, ['encrypt']);
+        const fileBuf = await crypto.subtle.encrypt(
+            { name: AES_MODE, iv: fileIv, additionalData: new Uint8Array(0) }, fileKey, fileBuffer
+        );
+        const fileOut     = new Uint8Array(fileBuf);
+        const cipherBytes = fileOut.slice(0, -16);
+        const fileAuthTag = fileOut.slice(-16);
+
+        const fkB64 = bufToBase64(FK);
+        const fiB64 = bufToBase64(fileIv);
+        const faB64 = bufToBase64(fileAuthTag);
 
         // Wrap file key + file encryption params in the ratchet chain
         const mk     = await advanceSendChain(session);
         const msgN   = session.send_Ns - 1;
         const header = { n: msgN, pn: session.send_PN, dh: session.DHs.pub_jwk };
         const aad    = enc.encode(JSON.stringify(header));
-        const wrapPayload = JSON.stringify({ fk: bufToBase64(FK), fi: fileEnc.iv, fa: fileEnc.authTag });
+        const wrapPayload = JSON.stringify({ fk: fkB64, fi: fiB64, fa: faB64 });
         const wrapped = await aesEncrypt(mk, enc.encode(wrapPayload), aad);
 
         // ECDH fallback: encrypt file key with static IK-to-IK shared secret so the
@@ -730,7 +741,7 @@ const Signal = (() => {
         // ECDH(sender_IK_priv, receiver_IK_pub) == ECDH(receiver_IK_priv, sender_IK_pub)
         const sharedFB   = await dhBits(IK_dh_priv, peerBundle.ik_dh_public);
         const fbEncKey   = await hkdf(sharedFB, new Uint8Array(32), 'UTHMFileKeyFallback', 32);
-        const fbPayload  = JSON.stringify({ fk: bufToBase64(FK), fi: fileEnc.iv, fa: fileEnc.authTag });
+        const fbPayload  = JSON.stringify({ fk: fkB64, fi: fiB64, fa: faB64 });
         const fbEnc      = await aesEncrypt(fbEncKey, enc.encode(fbPayload), new Uint8Array(0));
         const ecdhFileKey = JSON.stringify({ ct: fbEnc.ciphertext, iv: fbEnc.iv, at: fbEnc.authTag });
 
@@ -745,8 +756,8 @@ const Signal = (() => {
                 signal_prekey_data: pkeyData ? JSON.stringify(pkeyData) : null,
                 ecdh_file_key:      ecdhFileKey
             },
-            encryptedBuffer: base64ToBuf(fileEnc.ciphertext).buffer,
-            fileKeyData:     { fk: bufToBase64(FK), fi: fileEnc.iv, fa: fileEnc.authTag }
+            encryptedBuffer: cipherBytes.buffer,
+            fileKeyData:     { fk: fkB64, fi: fiB64, fa: faB64 }
         };
     }
 
@@ -780,8 +791,17 @@ const Signal = (() => {
             }
         }
 
-        const FK = base64ToBuf(fileKeyData.fk);
-        return (await aesDecrypt(FK, bufToBase64(new Uint8Array(encryptedBuffer)), fileKeyData.fi, fileKeyData.fa, new Uint8Array(0))).buffer;
+        const FK      = base64ToBuf(fileKeyData.fk);
+        const fileKey = await crypto.subtle.importKey('raw', FK, { name: AES_MODE }, false, ['decrypt']);
+        const authTag = base64ToBuf(fileKeyData.fa);
+        const encArr  = new Uint8Array(encryptedBuffer);
+        const combined = new Uint8Array(encArr.length + authTag.length);
+        combined.set(encArr);
+        combined.set(authTag, encArr.length);
+        return crypto.subtle.decrypt(
+            { name: AES_MODE, iv: base64ToBuf(fileKeyData.fi), additionalData: new Uint8Array(0) },
+            fileKey, combined
+        );
     }
 
     // Cache file key at load time (called during loadMessages for receiver's file messages)
@@ -1037,9 +1057,22 @@ const Signal = (() => {
             await distributeSenderKey(skState, myUserId, groupId, members, IK_dh_priv, apiBase);
         }
 
+        // Encrypt file directly via Web Crypto API — no base64 roundtrip on large buffers
         const FK      = randomBytes(32);
-        const fileEnc = await aesEncrypt(FK, fileBuffer, new Uint8Array(0));
-        const wrapStr = JSON.stringify({ fk: bufToBase64(FK), fi: fileEnc.iv, fa: fileEnc.authTag });
+        const fileIv  = randomBytes(IV_LEN);
+        const fileKey = await crypto.subtle.importKey('raw', FK, { name: AES_MODE }, false, ['encrypt']);
+        const fileBuf = await crypto.subtle.encrypt(
+            { name: AES_MODE, iv: fileIv, additionalData: new Uint8Array(0) }, fileKey, fileBuffer
+        );
+        const fileOut     = new Uint8Array(fileBuf);
+        const cipherBytes = fileOut.slice(0, -16);
+        const fileAuthTag = fileOut.slice(-16);
+
+        const fkB64 = bufToBase64(FK);
+        const fiB64 = bufToBase64(fileIv);
+        const faB64 = bufToBase64(fileAuthTag);
+
+        const wrapStr = JSON.stringify({ fk: fkB64, fi: fiB64, fa: faB64 });
         const result  = await skEncrypt(skState, wrapStr);
 
         await saveSenderKeyToIDB(groupId, myUserId, skState);
@@ -1051,8 +1084,8 @@ const Signal = (() => {
                 auth_tag:        result.auth_tag,
                 signal_header:   result.signal_header
             },
-            encryptedBuffer: base64ToBuf(fileEnc.ciphertext).buffer,
-            fileKeyData:     { fk: bufToBase64(FK), fi: fileEnc.iv, fa: fileEnc.authTag }
+            encryptedBuffer: cipherBytes.buffer,
+            fileKeyData:     { fk: fkB64, fi: fiB64, fa: faB64 }
         };
     }
 
@@ -1066,8 +1099,17 @@ const Signal = (() => {
             await cacheFileKey(myUserId, msg.message_id, fileKeyData);
         }
 
-        const FK = base64ToBuf(fileKeyData.fk);
-        return (await aesDecrypt(FK, bufToBase64(new Uint8Array(encryptedBuffer)), fileKeyData.fi, fileKeyData.fa, new Uint8Array(0))).buffer;
+        const FK      = base64ToBuf(fileKeyData.fk);
+        const fileKey = await crypto.subtle.importKey('raw', FK, { name: AES_MODE }, false, ['decrypt']);
+        const authTag = base64ToBuf(fileKeyData.fa);
+        const encArr  = new Uint8Array(encryptedBuffer);
+        const combined = new Uint8Array(encArr.length + authTag.length);
+        combined.set(encArr);
+        combined.set(authTag, encArr.length);
+        return crypto.subtle.decrypt(
+            { name: AES_MODE, iv: base64ToBuf(fileKeyData.fi), additionalData: new Uint8Array(0) },
+            fileKey, combined
+        );
     }
 
     // Cache group file key at load time
