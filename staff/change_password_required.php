@@ -145,19 +145,37 @@ include '../includes/header.php';
 
             <div class="mb-3">
                 <label class="form-label">Current Temporary Password</label>
-                <input type="password" id="current-pw" class="form-control"
-                       placeholder="Enter your temporary password">
+                <div class="login-pw-wrap">
+                    <input type="password" id="current-pw" class="form-control"
+                           placeholder="Enter your temporary password">
+                    <button type="button" class="login-pw-toggle" tabindex="-1" aria-label="Show password"
+                            onclick="togglePw('current-pw',this)">
+                        <i class="fas fa-eye"></i>
+                    </button>
+                </div>
             </div>
             <div class="mb-3">
                 <label class="form-label">New Password</label>
-                <input type="password" id="new-pw" class="form-control"
-                       placeholder="Minimum 8 characters">
+                <div class="login-pw-wrap">
+                    <input type="password" id="new-pw" class="form-control"
+                           placeholder="Minimum 8 characters">
+                    <button type="button" class="login-pw-toggle" tabindex="-1" aria-label="Show password"
+                            onclick="togglePw('new-pw',this)">
+                        <i class="fas fa-eye"></i>
+                    </button>
+                </div>
                 <div id="pw-strength" class="mt-1"></div>
             </div>
             <div class="mb-4">
                 <label class="form-label">Confirm New Password</label>
-                <input type="password" id="confirm-pw" class="form-control"
-                       placeholder="Repeat new password">
+                <div class="login-pw-wrap">
+                    <input type="password" id="confirm-pw" class="form-control"
+                           placeholder="Repeat new password">
+                    <button type="button" class="login-pw-toggle" tabindex="-1" aria-label="Show password"
+                            onclick="togglePw('confirm-pw',this)">
+                        <i class="fas fa-eye"></i>
+                    </button>
+                </div>
             </div>
 
             <button id="change-btn" class="btn btn-gradient w-100">
@@ -169,6 +187,14 @@ include '../includes/header.php';
 </div>
 
 <script>
+function togglePw(id, btn) {
+    var inp  = document.getElementById(id);
+    var icon = btn.querySelector('i');
+    var show = inp.type === 'password';
+    inp.type = show ? 'text' : 'password';
+    icon.className = show ? 'fas fa-eye-slash' : 'fas fa-eye';
+}
+
 const USER_ID  = <?php echo intval($user_id); ?>;
 const API_BASE = window.__API_BASE || '/api';
 <?php

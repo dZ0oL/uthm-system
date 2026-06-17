@@ -109,8 +109,12 @@ if (!empty($_SESSION['is_head_admin'])) {
             $pdo->beginTransaction();
             $pdo->prepare("UPDATE users SET password=?, password_change_required=1 WHERE user_id=?")
                 ->execute([$hashed, $req['user_id']]);
+            // Close the approved request AND any other pending/otp_pending requests
+            // for this user so stale rows don't block future reset attempts.
             $pdo->prepare("UPDATE admin_reset_requests SET status='completed', approved_by=?, approved_at=NOW() WHERE request_id=?")
                 ->execute([$_SESSION['user_id'], $req_id]);
+            $pdo->prepare("UPDATE admin_reset_requests SET status='completed', approved_by=?, approved_at=NOW() WHERE user_id=? AND status IN ('pending','otp_pending') AND request_id != ?")
+                ->execute([$_SESSION['user_id'], $req['user_id'], $req_id]);
             $pdo->prepare("INSERT INTO audit_logs (user_id, action, details) VALUES (?, 'Approve Admin Reset', ?)")
                 ->execute([$_SESSION['user_id'], "Approved and reset password for: {$req['name']} ({$req['email']})"]);
             $pdo->commit();
@@ -133,7 +137,7 @@ if (!empty($_SESSION['is_head_admin'])) {
                 error_log('Admin reset approval email failed: ' . $e->getMessage());
             }
         }
-        header('Location: recovery_requests.php');
+        header('Location: recovery_requests.php?success=approved');
         exit;
     }
 
@@ -674,11 +678,7 @@ document.getElementById('execute-recovery-btn').addEventListener('click', async 
             bootstrap.Modal.getInstance(
                 document.getElementById('recoveryModal')
             ).hide();
-            showStatus(
-                `✅ Recovery successful! New keys issued. ` +
-                `Staff member will receive an email with login instructions.`,
-                'success'
-            );
+            appToast('Recovery successful! New keys issued. Staff member will receive an email with login instructions.', 'success');
             // Update row status pill in table
             const statusPill = document.querySelector(`#row-${_recoveryRequestId} span[style*="border-radius:20px"]`);
             if (statusPill) {
@@ -706,5 +706,11 @@ document.getElementById('execute-recovery-btn').addEventListener('click', async 
     }
 });
 </script>
+
+<?php if (isset($_GET['success']) && $_GET['success'] === 'approved'): ?>
+<script>document.addEventListener('DOMContentLoaded', function () {
+    appToast('Password reset approved and email sent to admin.', 'success');
+});</script>
+<?php endif; ?>
 
 <?php include '../includes/footer.php'; ?>

@@ -71,6 +71,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         ->execute([$admin['user_id'], "Verification OTP sent to: $email", $_SERVER['REMOTE_ADDR'] ?? null]);
 
                     // Send OTP email
+                    $mailSent = false;
                     try {
                         require_once 'includes/mailer.php';
                         $html_body = "
@@ -102,9 +103,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                . "Verification OTP: $otp\nValid for 10 minutes.\n\n"
                                . "If you did not request this, ignore this email.\n\n"
                                . "UTHM Bursary Office";
-                        sendEmail($email, $admin['name'], 'UTHM Bursary — Password Reset Verification OTP', $html_body, $plain);
+                        $mailSent = sendEmail($email, $admin['name'], 'UTHM Bursary — Password Reset Verification OTP', $html_body, $plain);
                     } catch (Exception $e) {
                         error_log('Admin reset OTP email failed: ' . $e->getMessage());
+                    }
+
+                    // Dev fallback: store OTP in session so step 2 can display it when mail fails
+                    if (!$mailSent) {
+                        $_SESSION['admin_reset_dev_otp'] = $otp;
+                    } else {
+                        unset($_SESSION['admin_reset_dev_otp']);
                     }
 
                     $_SESSION['admin_reset_step']  = 2;
@@ -144,7 +152,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdo->prepare("INSERT INTO audit_logs (user_id, action, details, ip_address) VALUES (?, 'Admin Reset Verified', ?, ?)")
                     ->execute([$req['user_id'], "Identity verified, reset pending HOA approval: $email", $_SERVER['REMOTE_ADDR'] ?? null]);
 
-                unset($_SESSION['admin_reset_step'], $_SESSION['admin_reset_email']);
+                unset($_SESSION['admin_reset_step'], $_SESSION['admin_reset_email'], $_SESSION['admin_reset_dev_otp']);
                 $step    = 3;
                 $message = 'Your identity has been verified. Your request has been forwarded to the Head Admin for approval. You will receive an email once your password has been reset.';
                 $success = true;
@@ -191,18 +199,26 @@ include 'includes/header.php';
                     </div>
 
                 <?php elseif ($step === 2): ?>
-                    <div class="login-card-title">Verify Your Identity</div>
+                    <div class="login-card-title">Enter Verification Code</div>
                     <p class="text-muted small text-center mb-4">
-                        A verification OTP has been sent to<br>
-                        <strong><?php echo htmlspecialchars($stored_email); ?></strong>.
-                        Enter it below to submit your reset request to the Head Admin.
+                        A 6-digit code has been sent to<br>
+                        <strong><?php echo htmlspecialchars($stored_email); ?></strong>
                     </p>
                     <?php if ($error): ?>
                         <div class="alert alert-danger"><?php echo htmlspecialchars($error); ?></div>
                     <?php endif; ?>
+                    <?php if (!empty($_SESSION['admin_reset_dev_otp'])): ?>
+                    <div class="alert alert-warning">
+                        <small>
+                            <strong>Development mode:</strong>
+                            Mail not configured. Your OTP is:
+                            <strong><?php echo htmlspecialchars($_SESSION['admin_reset_dev_otp']); ?></strong>
+                        </small>
+                    </div>
+                    <?php endif; ?>
                     <form method="POST">
                         <div class="mb-4">
-                            <label class="form-label" style="font-size:13px;font-weight:500;color:#475569;">OTP Code</label>
+                            <label class="form-label" style="font-size:13px;font-weight:500;color:#475569;">6-Digit Verification Code</label>
                             <input type="text" name="otp" class="form-control text-center"
                                    placeholder="000000" maxlength="6" required
                                    style="letter-spacing:8px;font-size:24px;" autofocus>
@@ -212,9 +228,7 @@ include 'includes/header.php';
                             <i class="fas fa-check"></i> Verify &amp; Submit Request
                         </button>
                         <div class="text-center" style="font-size:13px;">
-                            <a href="?restart=1" class="text-decoration-none" style="color:var(--accent);">Start over</a>
-                            <span class="text-muted mx-2">&bull;</span>
-                            <a href="index.php" class="text-decoration-none" style="color:var(--accent);"><i class="fas fa-arrow-left"></i> Back to Login</a>
+                            <a href="?restart=1" class="btn btn-link p-0" style="color:var(--accent);font-size:13px;">Didn't receive code? Resend</a>
                         </div>
                     </form>
 

@@ -59,7 +59,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'edit_
             ->execute([$_SESSION['user_id'],
                 "Edited user_id:{$target_id} — name: '{$old_data['name']}'→'{$name}', staff_id: '{$old_data['staff_id']}'→'{$staff_id}', dept: '{$old_data['department']}'→'{$department}'"]);
     }
-    header('Location: manage_users.php');
+    header('Location: manage_users.php?success=edited');
     exit;
 }
 
@@ -111,11 +111,10 @@ if (isset($_GET['action'])) {
     exit;
 }
 
-// Get all users with their groups and message count — HOA first, then admins by ID, then staff by ID
+// Get all users with their groups — HOA first, then admins by ID, then staff by ID
 $stmt = $pdo->query("
     SELECT u.*,
-           GROUP_CONCAT(DISTINCT g.group_name ORDER BY g.group_name SEPARATOR ', ') as user_groups,
-           (SELECT COUNT(*) FROM messages WHERE sender_id = u.user_id) as message_count
+           GROUP_CONCAT(DISTINCT g.group_name ORDER BY g.group_name SEPARATOR ', ') as user_groups
     FROM users u
     LEFT JOIN group_members gm ON u.user_id = gm.user_id
     LEFT JOIN `groups` g ON gm.group_id = g.group_id
@@ -209,7 +208,6 @@ include '../includes/header.php';
                                     <th>Role</th>
                                     <th>Department</th>
                                     <th>Groups</th>
-                                    <th>Messages</th>
                                     <th>Status</th>
                                     <th>Failed Attempts</th>
                                     <th>Actions</th>
@@ -248,11 +246,6 @@ include '../includes/header.php';
                                                     ? htmlspecialchars($user['user_groups'])
                                                     : 'No groups'; ?>
                                             </small>
-                                        </td>
-                                        <td>
-                                            <span class="badge bg-secondary">
-                                                <?php echo $user['message_count']; ?>
-                                            </span>
                                         </td>
                                         <?php
                                             $user_is_locked = !empty($user['locked_until']) && new DateTime($user['locked_until']) > $now;
@@ -417,6 +410,12 @@ include '../includes/header.php';
         </div>
     </div>
 </div>
+<?php if (isset($_GET['success']) && $_GET['success'] === 'edited'): ?>
+<script>document.addEventListener('DOMContentLoaded', function () {
+    appToast('User information updated successfully.', 'success');
+});</script>
+<?php endif; ?>
+
 <script>
 function openEditModal(userId, name, staffId, dept) {
     document.getElementById('editUserId').value   = userId;

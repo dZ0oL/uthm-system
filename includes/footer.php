@@ -27,6 +27,19 @@
     </div>
 </div>
 <script>
+function appToast(message, type) {
+    var color  = type === 'success' ? '#166534' : type === 'danger' ? '#b91c1c' : '#1e40af';
+    var icon   = type === 'success' ? 'check-circle' : type === 'danger' ? 'exclamation-circle' : 'info-circle';
+    var toast  = document.createElement('div');
+    toast.style.cssText = 'position:fixed;top:20px;right:20px;z-index:10001;background:#fff;border-radius:12px;padding:14px 18px;box-shadow:0 8px 32px rgba(0,0,0,.15);font-size:14px;display:flex;align-items:center;gap:10px;max-width:360px;border-left:4px solid ' + color + ';transition:opacity .3s;';
+    toast.innerHTML = '<i class="fas fa-' + icon + '" style="color:' + color + ';flex-shrink:0;"></i><span style="color:#0f172a;">' + message + '</span>';
+    document.body.appendChild(toast);
+    setTimeout(function () {
+        toast.style.opacity = '0';
+        setTimeout(function () { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 300);
+    }, 3500);
+}
+
 function appConfirm(title, message, type, affirmLabel, onConfirm) {
     var backdrop = document.getElementById('appConfirmBackdrop');
     document.getElementById('appConfirmTitle').textContent = title;
