@@ -449,6 +449,23 @@ let _selectedFile    = null; // currently selected file
 const _fileMessages  = {};   // message_id → file metadata, avoids embedding JSON in onclick attrs
 const _decryptFailed = new Set(); // message IDs that permanently failed this session
 
+// ── Account recovery state ────────────────────────────────────
+// If set, messages older than this ISO timestamp are hidden (they
+// used previous keys and cannot be decrypted after SSS recovery).
+const _recoveryCutoffKey  = `_recovery_cutoff_${CHAT_CONFIG.myUserId}`;
+const _recoveryDismissKey = `_recovery_notice_dismissed_${CHAT_CONFIG.myUserId}`;
+const _recoveryCutoff     = localStorage.getItem(_recoveryCutoffKey);
+
+function _recoveryNoticeNeeded() {
+    return !!_recoveryCutoff && !localStorage.getItem(_recoveryDismissKey);
+}
+
+function dismissRecoveryNotice() {
+    localStorage.setItem(_recoveryDismissKey, '1');
+    const el = document.getElementById('recovery-notice');
+    if (el) el.remove();
+}
+
 // Per-user bubble colours — assigned by sender_id % palette length
 const MEMBER_PALETTE = [
     { bg: '#e1effe', name: '#1a56db' }, // blue
@@ -639,6 +656,11 @@ async function loadMessages() {
                 continue;
             }
 
+            // Hide messages predating a recovery event — they used old keys and are undecryptable.
+            if (_recoveryCutoff && new Date(msg.timestamp).getTime() < new Date(_recoveryCutoff).getTime()) {
+                continue;
+            }
+
             try {
                 if (isFile) {
                     text = null; // file bubble — decrypt lazily on download
@@ -750,6 +772,28 @@ async function loadMessages() {
             }
             const chatBox = document.getElementById('chat-box');
             chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        // Inject recovery notice banner above the message area (stays until dismissed)
+        if (_recoveryNoticeNeeded() && !document.getElementById('recovery-notice')) {
+            const chatBox  = document.getElementById('chat-box');
+            const noticeEl = document.createElement('div');
+            noticeEl.id    = 'recovery-notice';
+            noticeEl.style.cssText = 'margin:12px 16px 0;flex-shrink:0;';
+            noticeEl.innerHTML = `
+                <div style="background:#e8f4fd;border:1px solid #bee5fd;border-radius:8px;
+                            padding:10px 14px;display:flex;align-items:flex-start;gap:10px;">
+                    <i class="fas fa-info-circle" style="color:#0c63e4;margin-top:2px;flex-shrink:0;"></i>
+                    <span style="flex:1;font-size:13px;color:#0a4a8c;line-height:1.6;">
+                        Account recovered successfully. Previous messages are not available as they were
+                        encrypted with your previous session keys. This is by design to protect your privacy.
+                    </span>
+                    <button onclick="dismissRecoveryNotice()"
+                            style="border:none;background:none;color:#0a4a8c;cursor:pointer;
+                                   padding:0 2px;font-size:18px;flex-shrink:0;opacity:.6;line-height:1;"
+                            title="Dismiss">&times;</button>
+                </div>`;
+            chatBox.insertBefore(noticeEl, chatBox.firstChild);
         }
 
         markRead(); // tell the server this conversation has been seen

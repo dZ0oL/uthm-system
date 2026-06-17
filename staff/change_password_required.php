@@ -162,6 +162,11 @@ include '../includes/header.php';
 <script>
 const USER_ID  = <?php echo intval($user_id); ?>;
 const API_BASE = window.__API_BASE || '/api';
+<?php
+$_just_recovered = !empty($_SESSION['account_just_recovered']);
+unset($_SESSION['account_just_recovered']);
+?>
+const ACCOUNT_JUST_RECOVERED = <?= $_just_recovered ? 'true' : 'false' ?>;
 
 document.getElementById('new-pw').addEventListener('input', function () {
     const pw  = this.value;
@@ -274,6 +279,13 @@ document.getElementById('change-btn').addEventListener('click', async () => {
         const result = await res.json();
         if (!result.success) throw new Error(result.error || 'Password update failed');
 
+        // Wipe local IndexedDB so old Signal sessions and device share are cleared.
+        // The device share re-fetch below (hasShare check) will pick up the new share.
+        if (ACCOUNT_JUST_RECOVERED) {
+            await new Promise(resolve => { const r = indexedDB.deleteDatabase('uthm_signal'); r.onsuccess = r.onerror = () => resolve(); });
+            await new Promise(resolve => { const r = indexedDB.deleteDatabase('uthm_secure'); r.onsuccess = r.onerror = () => resolve(); });
+        }
+
         sessionStorage.setItem('_tmp_pw', newPw);
         const sessionKey = await UTHMCrypto.unlockPrivateKey(newEncKey, newKeyIv, newAuthTag, newPw);
         UTHMCrypto.setSessionKey(USER_ID, sessionKey);
@@ -302,6 +314,10 @@ document.getElementById('change-btn').addEventListener('click', async () => {
             const mergedKeyData = { ...keyData, ...signalKeyPayload };
             const { IK_dh_priv, IK_sign_priv } = await Signal.unlockKeys(mergedKeyData, newPw);
             Signal.setIdentitySession(USER_ID, IK_dh_priv, IK_sign_priv, keyData.ik_dh_public, keyData.ik_sign_public);
+        }
+
+        if (ACCOUNT_JUST_RECOVERED) {
+            localStorage.setItem(`_recovery_cutoff_${USER_ID}`, new Date().toISOString());
         }
 
         okDiv.textContent   = '✅ Password updated successfully! Redirecting...';

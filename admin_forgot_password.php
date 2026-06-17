@@ -214,7 +214,7 @@ include 'includes/header.php';
                         <div class="text-center" style="font-size:13px;">
                             <a href="?restart=1" class="text-decoration-none" style="color:var(--accent);">Start over</a>
                             <span class="text-muted mx-2">&bull;</span>
-                            <a href="index.php" class="text-decoration-none" style="color:var(--accent);">Back to Login</a>
+                            <a href="index.php" class="text-decoration-none" style="color:var(--accent);"><i class="fas fa-arrow-left"></i> Back to Login</a>
                         </div>
                     </form>
 
@@ -237,7 +237,7 @@ include 'includes/header.php';
                             <i class="fas fa-paper-plane"></i> Send Verification OTP
                         </button>
                         <div class="text-center" style="font-size:13px;">
-                            <a href="index.php" class="text-decoration-none" style="color:var(--accent);">Back to Login</a>
+                            <a href="index.php" class="text-decoration-none" style="color:var(--accent);"><i class="fas fa-arrow-left"></i> Back to Login</a>
                         </div>
                     </form>
                 <?php endif; ?>

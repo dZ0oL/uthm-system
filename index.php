@@ -46,6 +46,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 $_SESSION['role']      = $user['role'];
                 $_SESSION['password_change_required'] = $user['password_change_required'] == 1;
                 $_SESSION['is_head_admin'] = !empty($user['is_head_admin']);
+                // Recovered users have ecdh_public_key set (new key from recovery) + password_change_required.
+                // New staff have ecdh_public_key = NULL at first login.
+                $_SESSION['account_just_recovered'] = $user['password_change_required'] == 1 && !empty($user['ecdh_public_key']);
 
                 $session_token = bin2hex(random_bytes(32));
                 $_SESSION['session_token'] = $session_token;

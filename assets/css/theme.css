@@ -1148,6 +1148,12 @@ body {
 }
 .login-pw-toggle:hover { color: var(--text); }
 
+/* Suppress browser-native password reveal button (Edge/Chrome) to avoid duplicate with custom toggle */
+.login-pw-wrap input[type="password"]::-ms-reveal,
+.login-pw-wrap input[type="password"]::-ms-clear { display: none; }
+.login-pw-wrap input[type="password"]::-webkit-credentials-auto-fill-button,
+.login-pw-wrap input[type="password"]::-webkit-password-reveal-button { visibility: hidden; display: none; }
+
 /* Form box — transparent on all screen sizes */
 .login-form-box { background: none; }
 
