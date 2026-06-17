@@ -7,32 +7,39 @@ require_once 'config/database.php';
 $error      = '';
 $error_type = 'danger';
 
+// Lock account after 5 wrong passwords for 5 minutes
 define('LOGIN_MAX_ATTEMPTS', 5);
 define('LOGIN_LOCKOUT_MINUTES', 5);
 
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+    // Reject forged form submissions (CSRF protection)
     csrf_verify();
 
     $email    = $_POST['email'];
     $password = $_POST['password'];
 
+    // Look up the account by email — use prepared statement to prevent SQL injection
     $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ?");
     $stmt->execute([$email]);
     $user = $stmt->fetch();
 
     if (!$user) {
+        // Return a generic error — don't reveal whether the email exists
         $error = 'Invalid email or password.';
     } else {
         $now        = new DateTime();
+        // Check if the account is still within its lockout window
         $is_locked  = !empty($user['locked_until']) && new DateTime($user['locked_until']) > $now;
 
         if ($is_locked) {
+            // Show how many minutes remain in the lockout
             $diff              = $now->diff(new DateTime($user['locked_until']));
             $minutes_remaining = $diff->h * 60 + $diff->i + ($diff->s > 0 ? 1 : 0);
             $error      = "Account temporarily locked due to too many failed login attempts. Try again in {$minutes_remaining} minute(s), or contact your administrator.";
             $error_type = 'warning';
 
         } elseif (password_verify($password, $user['password'])) {
+            // password_verify() compares the plain password against the bcrypt hash in the DB
             if ($user['status'] === 'inactive') {
                 $error      = 'Your account has been deactivated. Please contact your administrator.';
                 $error_type = 'warning';
@@ -41,6 +48,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 $pdo->prepare("UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE user_id = ?")
                     ->execute([$user['user_id']]);
 
+                // Write the user's identity into the session
                 $_SESSION['user_id']   = $user['user_id'];
                 $_SESSION['name']      = $user['name'];
                 $_SESSION['role']      = $user['role'];
@@ -50,12 +58,16 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 // New staff have ecdh_public_key = NULL at first login.
                 $_SESSION['account_just_recovered'] = $user['password_change_required'] == 1 && !empty($user['ecdh_public_key']);
 
+                // Single-device enforcement: generate a fresh session token and write it to the DB.
+                // Any other device whose stored token no longer matches will be kicked out by check_session.php.
                 $session_token = bin2hex(random_bytes(32));
                 $_SESSION['session_token'] = $session_token;
 
+                // Overwrite the token on the server — invalidates all other active sessions
                 $pdo->prepare("UPDATE users SET session_token = ? WHERE user_id = ?")
                     ->execute([$session_token, $user['user_id']]);
 
+                // Audit trail — logs the login event with IP address
                 $log_stmt = $pdo->prepare("
                     INSERT INTO audit_logs (user_id, action, details, ip_address)
                     VALUES (?, 'Login', ?, ?)
@@ -70,6 +82,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                     header('Location: admin/dashboard.php');
                     exit;
                 }
+                // Staff fall through to the crypto loading screen below
             }
         } else {
             // Wrong password — count against the lockout threshold.
@@ -79,6 +92,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             $new_attempts    = $base_attempts + 1;
 
             if ($new_attempts >= LOGIN_MAX_ATTEMPTS) {
+                // Threshold reached — lock the account for LOGIN_LOCKOUT_MINUTES minutes
                 $pdo->prepare("UPDATE users SET failed_login_attempts = ?, locked_until = DATE_ADD(NOW(), INTERVAL " . LOGIN_LOCKOUT_MINUTES . " MINUTE) WHERE user_id = ?")
                     ->execute([$new_attempts, $user['user_id']]);
                 $pdo->prepare("INSERT INTO audit_logs (user_id, action, details, ip_address) VALUES (?, 'Account Locked', ?, ?)")
@@ -86,6 +100,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 $error      = "Too many failed login attempts. Your account has been locked for " . LOGIN_LOCKOUT_MINUTES . " minutes.";
                 $error_type = 'danger';
             } else {
+                // Not locked yet — increment the counter and show remaining attempts
                 $pdo->prepare("UPDATE users SET failed_login_attempts = ?, locked_until = NULL WHERE user_id = ?")
                     ->execute([$new_attempts, $user['user_id']]);
                 $remaining  = LOGIN_MAX_ATTEMPTS - $new_attempts;
@@ -111,19 +126,23 @@ include 'includes/header.php';
 </div>
 
 <script>
+// Runs once after the staff login succeeds — unlocks the ECDH private key and saves SSS share 1
 document.addEventListener('DOMContentLoaded', async () => {
     const userId = <?php echo intval($_SESSION['user_id']); ?>;
     const status = document.getElementById('crypto-status');
 
+    // Password was saved to sessionStorage by the form submit handler below
     const password = sessionStorage.getItem('_tmp_pw');
 
     if (!password) {
+        // sessionStorage cleared (e.g. new tab) — session.js will show the unlock modal on dashboard
         console.warn('[Crypto] No password in sessionStorage — redirecting (modal will appear)');
         window.location.href = 'staff/dashboard.php';
         return;
     }
 
     try {
+        // Fetch the encrypted private key from the server (server stores ciphertext, not plaintext)
         status.textContent = 'Fetching encryption keys...';
         const keyResponse  = await fetch((window.__API_BASE || '/api') + '/get_user_keys.php');
         const keyData      = await keyResponse.json();
@@ -134,6 +153,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
+        // Decrypt the private key using the user's password (PBKDF2 + AES-GCM)
         status.textContent = 'Unlocking private key...';
         const privateKey   = await UTHMCrypto.unlockPrivateKey(
             keyData.encrypted_private_key,
@@ -142,13 +162,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             password
         );
 
+        // Hold the key in memory for this page session — never stored on disk
         UTHMCrypto.setSessionKey(userId, privateKey);
         console.log('[Crypto] Private key unlocked ✅');
 
+        // Check if Shamir share 1 is already in the browser's IndexedDB (uthm_secure)
         status.textContent  = 'Checking device registration...';
         const hasShare      = await UTHMCrypto.deviceHasShare(userId);
 
         if (!hasShare) {
+            // First login on this device — fetch share 1 from the server and save it locally
             status.textContent = 'Registering this device...';
             const shareRes  = await fetch((window.__API_BASE || '/api') + '/get_device_share.php');
             const shareData = await shareRes.json();
@@ -163,6 +186,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     privateKey,
                     shareData.eph_pub
                 );
+                // Save the decrypted share to IndexedDB, password-protected
                 await UTHMCrypto.saveShareToDevice(userId, { shareIndex: 1, shareData: plain }, password);
                 console.log('[Crypto] Share 1 saved to this device ✅');
             } else {
@@ -256,6 +280,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 </div>
 
 <script>
+// Save password to sessionStorage BEFORE form submits so the crypto loading screen can use it
 document.getElementById('loginForm').addEventListener('submit', function () {
     const pw = document.getElementById('login_password').value;
     sessionStorage.setItem('_tmp_pw', pw);

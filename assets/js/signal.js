@@ -18,11 +18,11 @@ const Signal = (() => {
     // ── Constants ───────────────────────────────────────────────
     const CURVE       = 'P-256';
     const AES_MODE    = 'AES-GCM';
-    const PBKDF2_ITER = 100000;
-    const IV_LEN      = 12;
-    const SALT_LEN    = 16;
+    const PBKDF2_ITER = 100000;  // PBKDF2 iteration count — higher = harder to brute-force
+    const IV_LEN      = 12;      // AES-GCM nonce size in bytes
+    const SALT_LEN    = 16;      // Salt size for PBKDF2
 
-    const IDB_NAME    = 'uthm_signal';
+    const IDB_NAME    = 'uthm_signal';  // IndexedDB database name
     const IDB_VER     = 1;
 
     const enc = new TextEncoder();
@@ -30,27 +30,31 @@ const Signal = (() => {
 
     // ── Utilities ────────────────────────────────────────────────
 
+    // Convert a binary buffer to a base64 string (safe for large buffers)
     function bufToBase64(buf) {
         const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
         let binary = '';
         const CHUNK = 0x8000;
+        // Process in chunks to avoid stack overflow on large arrays
         for (let i = 0; i < bytes.length; i += CHUNK) {
             binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + CHUNK, bytes.length)));
         }
         return btoa(binary);
     }
 
+    // Convert a base64 string back to a Uint8Array
     function base64ToBuf(b64) {
         return Uint8Array.from(atob(b64), c => c.charCodeAt(0));
     }
 
+    // Generate n random bytes using the browser's cryptographic RNG
     function randomBytes(n) {
         return crypto.getRandomValues(new Uint8Array(n));
     }
 
     // ── Crypto primitives ─────────────────────────────────────────
 
-    // HKDF-SHA-256: input: Uint8Array, salt: Uint8Array, info: string
+    // HKDF-SHA-256: stretches key material into a derived key of byteLen bytes
     async function hkdf(input, salt, info, byteLen) {
         const km = await crypto.subtle.importKey('raw', input, 'HKDF', false, ['deriveBits']);
         const bits = await crypto.subtle.deriveBits(
@@ -60,7 +64,7 @@ const Signal = (() => {
         return new Uint8Array(bits);
     }
 
-    // ECDH shared bits: privateKey (CryptoKey), publicKeyJwk (JSON string)
+    // ECDH: combine our private key with the peer's public key to get a shared secret
     async function dhBits(privateKey, publicKeyJwk) {
         const pub = await crypto.subtle.importKey(
             'jwk', JSON.parse(publicKeyJwk),
@@ -70,11 +74,12 @@ const Signal = (() => {
         return new Uint8Array(bits);
     }
 
-    // Chain key KDF: returns [new_ck_bytes, mk_bytes]
+    // Double Ratchet chain key KDF: advances the chain and returns [new_chain_key, message_key]
     async function kdfCK(ck) {
         const key = await crypto.subtle.importKey(
             'raw', ck, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
         );
+        // Byte 0x01 derives the message key, byte 0x02 derives the next chain key
         const mk  = new Uint8Array(await crypto.subtle.sign('HMAC', key, new Uint8Array([1])));
         const ck2 = new Uint8Array(await crypto.subtle.sign('HMAC', key, new Uint8Array([2])));
         return [ck2, mk];
@@ -88,6 +93,7 @@ const Signal = (() => {
             { name: AES_MODE, iv, additionalData: aad || new Uint8Array(0) }, k, plaintext
         );
         const out = new Uint8Array(buf);
+        // AES-GCM appends a 16-byte auth tag to the ciphertext — split them apart
         return {
             ciphertext: bufToBase64(out.slice(0, -16)),
             iv:         bufToBase64(iv),
@@ -95,11 +101,12 @@ const Signal = (() => {
         };
     }
 
-    // AES-256-GCM decrypt: returns Uint8Array
+    // AES-256-GCM decrypt: reattach the auth tag, then decrypt and return plaintext bytes
     async function aesDecrypt(keyBytes, ciphertext_b64, iv_b64, authTag_b64, aad) {
         const k        = await crypto.subtle.importKey('raw', keyBytes, { name: AES_MODE }, false, ['decrypt']);
         const _ct = base64ToBuf(ciphertext_b64);
         const _at = base64ToBuf(authTag_b64);
+        // Web Crypto expects ciphertext+authTag as a single concatenated buffer
         const combined = new Uint8Array(_ct.length + _at.length);
         combined.set(_ct);
         combined.set(_at, _ct.length);
@@ -114,18 +121,19 @@ const Signal = (() => {
         }
     }
 
-    // Generate ECDH keypair (extractable)
+    // Generate a new ECDH keypair (used for X3DH identity key and ratchet keys)
     async function genECDH() {
         return crypto.subtle.generateKey({ name: 'ECDH', namedCurve: CURVE }, true, ['deriveBits']);
     }
 
-    // Generate ECDSA keypair (extractable)
+    // Generate a new ECDSA keypair (used for signing SPK and sender key messages)
     async function genECDSA() {
         return crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: CURVE }, true, ['sign', 'verify']);
     }
 
     // ── Password-based encryption ─────────────────────────────────
 
+    // Derive an AES key from a password using PBKDF2 — slow by design to resist brute-force
     async function pwDeriveKey(password, salt) {
         const km = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
         return crypto.subtle.deriveKey(
@@ -134,12 +142,14 @@ const Signal = (() => {
         );
     }
 
+    // Encrypt arbitrary string data with a password (used to protect private keys at rest)
     async function pwEncrypt(data, password) {
         const salt = randomBytes(SALT_LEN);
         const iv   = randomBytes(IV_LEN);
         const k    = await pwDeriveKey(password, salt);
         const buf  = await crypto.subtle.encrypt({ name: AES_MODE, iv }, k, enc.encode(data));
         const out  = new Uint8Array(buf);
+        // Store salt and IV together (salt needed to re-derive the key on decrypt)
         return {
             encrypted: bufToBase64(out.slice(0, -16)),
             iv:        bufToBase64(salt) + '.' + bufToBase64(iv),
@@ -147,6 +157,7 @@ const Signal = (() => {
         };
     }
 
+    // Decrypt data that was protected with pwEncrypt — throws if password is wrong
     async function pwDecrypt(encrypted_b64, saltIv, authTag_b64, password) {
         const [saltB64, ivB64] = saltIv.split('.');
         const k       = await pwDeriveKey(password, base64ToBuf(saltB64));
@@ -163,11 +174,13 @@ const Signal = (() => {
 
     // ── IndexedDB ─────────────────────────────────────────────────
 
+    // Open (or create) the local IDB database with all required object stores
     function openIDB() {
         return new Promise((resolve, reject) => {
             const req = indexedDB.open(IDB_NAME, IDB_VER);
             req.onupgradeneeded = e => {
                 const db = e.target.result;
+                // Each store holds a different type of cryptographic state
                 ['sessions', 'sender_keys', 'prekeys', 'spk', 'decrypted', 'file_keys'].forEach(store => {
                     if (!db.objectStoreNames.contains(store)) {
                         db.createObjectStore(store, { keyPath: 'key' });
@@ -179,6 +192,7 @@ const Signal = (() => {
         });
     }
 
+    // Write a record to an IDB store (insert or overwrite)
     async function idbPut(store, record) {
         const db = await openIDB();
         return new Promise((resolve, reject) => {
@@ -190,6 +204,7 @@ const Signal = (() => {
         });
     }
 
+    // Read a record from an IDB store by key
     async function idbGet(store, key) {
         const db = await openIDB();
         return new Promise((resolve, reject) => {
@@ -201,6 +216,7 @@ const Signal = (() => {
         });
     }
 
+    // Delete a record from an IDB store by key
     async function idbDelete(store, key) {
         const db = await openIDB();
         return new Promise((resolve, reject) => {
@@ -247,30 +263,38 @@ const Signal = (() => {
 
     // ── In-memory identity session ────────────────────────────────
 
+    // Holds the unlocked Signal identity keys in memory for the current page session
     let _session = null;
 
+    // Store identity keys in memory after unlocking (never saved to server)
     function setIdentitySession(userId, IK_dh_priv, IK_sign_priv, IK_dh_pub_jwk, IK_sign_pub_jwk) {
         _session = { userId, IK_dh_priv, IK_sign_priv, IK_dh_pub_jwk, IK_sign_pub_jwk };
     }
 
+    // Retrieve the in-memory identity session — throws if not unlocked yet
     function getIdentitySession() {
         if (!_session) throw new Error('Signal identity session not initialized');
         return _session;
     }
 
+    // Check if keys are currently unlocked (used to decide whether Signal is available)
     function hasIdentitySession() { return _session !== null; }
 
     // ── Identity Key Generation & Unlock ──────────────────────────
 
+    // [KEY GENERATION] Create brand-new Signal identity keys (IK) protected by the user's password
+    // IK_dh = Diffie-Hellman key (for X3DH), IK_sign = signing key (for SPK authenticity)
     async function generateKeys(password) {
         const IK_dh   = await genECDH();
         const IK_sign = await genECDSA();
 
+        // Export public keys (sent to server) and private keys (encrypted before storage)
         const ik_dh_pub_jwk    = JSON.stringify(await crypto.subtle.exportKey('jwk', IK_dh.publicKey));
         const ik_dh_priv_jwk   = JSON.stringify(await crypto.subtle.exportKey('jwk', IK_dh.privateKey));
         const ik_sign_pub_jwk  = JSON.stringify(await crypto.subtle.exportKey('jwk', IK_sign.publicKey));
         const ik_sign_priv_jwk = JSON.stringify(await crypto.subtle.exportKey('jwk', IK_sign.privateKey));
 
+        // Encrypt private keys with the user's password before sending to server
         const enc_dh   = await pwEncrypt(ik_dh_priv_jwk, password);
         const enc_sign = await pwEncrypt(ik_sign_priv_jwk, password);
 
@@ -289,10 +313,12 @@ const Signal = (() => {
         };
     }
 
+    // [KEY UNLOCK] Decrypt IK private keys from server storage using the user's password
     async function unlockKeys(data, password) {
         const dh_priv_str   = await pwDecrypt(data.encrypted_ik_dh,   data.ik_dh_iv,   data.ik_dh_auth_tag,   password);
         const sign_priv_str = await pwDecrypt(data.encrypted_ik_sign, data.ik_sign_iv, data.ik_sign_auth_tag, password);
 
+        // Re-import as non-extractable CryptoKey objects for use in WebCrypto operations
         const IK_dh_priv = await crypto.subtle.importKey(
             'jwk', JSON.parse(dh_priv_str),
             { name: 'ECDH', namedCurve: CURVE }, false, ['deriveBits']
@@ -306,6 +332,7 @@ const Signal = (() => {
 
     // Re-encrypt IK private keys with a new password (called during password change)
     async function reEncryptKeys(data, currentPw, newPw) {
+        // Decrypt with old password then re-encrypt with new password
         const dh_priv_str   = await pwDecrypt(data.encrypted_ik_dh,   data.ik_dh_iv,   data.ik_dh_auth_tag,   currentPw);
         const sign_priv_str = await pwDecrypt(data.encrypted_ik_sign, data.ik_sign_iv, data.ik_sign_auth_tag, currentPw);
 
@@ -324,12 +351,15 @@ const Signal = (() => {
 
     // ── Signed Prekey ─────────────────────────────────────────────
 
+    // [X3DH] Generate a Signed Prekey (SPK) — an ECDH key signed by the identity key
+    // Senders verify this signature to confirm they're talking to the right person
     async function generateSPK(IK_sign_priv) {
         const spk_id  = Date.now();
         const SPK     = await genECDH();
         const pub_jwk  = JSON.stringify(await crypto.subtle.exportKey('jwk', SPK.publicKey));
         const priv_jwk = JSON.stringify(await crypto.subtle.exportKey('jwk', SPK.privateKey));
 
+        // Sign the SPK public key with our identity signing key
         const sig = await crypto.subtle.sign(
             { name: 'ECDSA', hash: 'SHA-256' }, IK_sign_priv, enc.encode(pub_jwk)
         );
@@ -338,20 +368,24 @@ const Signal = (() => {
             spk_id,
             spk_public:    pub_jwk,
             spk_signature: bufToBase64(new Uint8Array(sig)),
-            priv_jwk
+            priv_jwk       // kept locally in IDB, never sent to server
         };
     }
 
+    // Save SPK private key to IndexedDB so we can respond to X3DH initiations
     async function saveSPKtoIDB(spkData) {
         await idbPut('spk', { key: spkData.spk_id, pub_jwk: spkData.spk_public, priv_jwk: spkData.priv_jwk });
     }
 
+    // Look up a stored SPK private key by its ID (needed when processing X3DH from a sender)
     async function getSPKFromIDB(spk_id) {
         return idbGet('spk', spk_id);
     }
 
     // ── One-Time Prekeys ─────────────────────────────────────────
 
+    // [X3DH] Generate a batch of One-Time Prekeys (OPKs) — each used for exactly one session
+    // Using an OPK adds forward secrecy: even if long-term keys are stolen, past sessions are safe
     async function generateOPKs(count) {
         const keys = [];
         for (let i = 0; i < count; i++) {
@@ -364,24 +398,29 @@ const Signal = (() => {
         return keys;
     }
 
+    // Save OPK private keys to IDB so they're available when a sender uses one
     async function saveOPKsToIDB(opks) {
         for (const opk of opks) {
             await idbPut('prekeys', { key: opk.key_id, priv_jwk: opk.priv_jwk });
         }
     }
 
+    // Look up a stored OPK private key by its ID
     async function getOPKFromIDB(key_id) {
         return idbGet('prekeys', key_id);
     }
 
+    // Delete an OPK after it has been used — each OPK is one-time use only
     async function deleteOPKFromIDB(key_id) {
         return idbDelete('prekeys', key_id);
     }
 
     // ── X3DH ──────────────────────────────────────────────────────
 
+    // [X3DH SENDER SIDE] Alice initiates a session with Bob using his published key bundle
+    // Performs 3-4 DH operations to create a shared secret SK that only Alice and Bob can derive
     async function x3dhInitiate(IK_dh_priv, IK_dh_pub_jwk, bundle) {
-        // Verify SPK signature
+        // Step 1: Verify the SPK signature — confirms the bundle really belongs to Bob
         const IK_sign_pub = await crypto.subtle.importKey(
             'jwk', JSON.parse(bundle.ik_sign_public),
             { name: 'ECDSA', namedCurve: CURVE }, false, ['verify']
@@ -392,40 +431,44 @@ const Signal = (() => {
         );
         if (!sigValid) throw new Error('SPK signature verification failed — identity mismatch');
 
-        // Ephemeral key
+        // Step 2: Generate an ephemeral key — used only for this one session
         const EK         = await genECDH();
         const EK_pub_jwk = JSON.stringify(await crypto.subtle.exportKey('jwk', EK.publicKey));
 
-        // DH outputs
+        // Step 3: Perform the four DH operations (F is a fixed padding constant)
         const F   = new Uint8Array(32).fill(0xFF);
-        const DH1 = await dhBits(IK_dh_priv,    bundle.spk_public);
-        const DH2 = await dhBits(EK.privateKey,  bundle.ik_dh_public);
-        const DH3 = await dhBits(EK.privateKey,  bundle.spk_public);
+        const DH1 = await dhBits(IK_dh_priv,    bundle.spk_public);   // IK_A × SPK_B
+        const DH2 = await dhBits(EK.privateKey,  bundle.ik_dh_public); // EK_A × IK_B
+        const DH3 = await dhBits(EK.privateKey,  bundle.spk_public);   // EK_A × SPK_B
 
         const parts = [F, DH1, DH2, DH3];
         let opk_id = null;
 
+        // Step 4: If Bob has a One-Time Prekey, include it for extra forward secrecy
         if (bundle.opk_id && bundle.opk_public) {
-            parts.push(await dhBits(EK.privateKey, bundle.opk_public));
+            parts.push(await dhBits(EK.privateKey, bundle.opk_public)); // EK_A × OPK_B
             opk_id = bundle.opk_id;
         }
 
+        // Step 5: Combine all DH outputs through HKDF to get the final shared secret SK
         const ikm = concatBytes(...parts);
         const SK  = await hkdf(ikm, new Uint8Array(32), 'WhisperText', 32);
 
         return { SK, EK_pub_jwk, spk_id: bundle.spk_id, opk_id };
     }
 
+    // [X3DH RECEIVER SIDE] Bob processes Alice's X3DH message and derives the same SK
     async function x3dhRespond(IK_dh_priv, spk_priv_jwk, opk_priv_jwk, pkData) {
         const SPK_priv = await crypto.subtle.importKey(
             'jwk', JSON.parse(spk_priv_jwk),
             { name: 'ECDH', namedCurve: CURVE }, false, ['deriveBits']
         );
 
+        // Bob mirrors the same DH operations as Alice, in reverse order
         const F   = new Uint8Array(32).fill(0xFF);
-        const DH1 = await dhBits(SPK_priv,    pkData.ik_dh_pub);
-        const DH2 = await dhBits(IK_dh_priv,  pkData.ek_pub);
-        const DH3 = await dhBits(SPK_priv,    pkData.ek_pub);
+        const DH1 = await dhBits(SPK_priv,    pkData.ik_dh_pub); // SPK_B × IK_A
+        const DH2 = await dhBits(IK_dh_priv,  pkData.ek_pub);    // IK_B  × EK_A
+        const DH3 = await dhBits(SPK_priv,    pkData.ek_pub);    // SPK_B × EK_A
 
         const parts = [F, DH1, DH2, DH3];
 
@@ -435,7 +478,7 @@ const Signal = (() => {
                 { name: 'ECDH', namedCurve: CURVE }, false, ['deriveBits']
             );
             parts.push(await dhBits(OPK_priv, pkData.ek_pub));
-            await deleteOPKFromIDB(pkData.opk_id); // one-time use
+            await deleteOPKFromIDB(pkData.opk_id); // one-time use — delete after use
         }
 
         const ikm = concatBytes(...parts);
@@ -443,6 +486,7 @@ const Signal = (() => {
         return { SK };
     }
 
+    // Concatenate multiple Uint8Arrays into one
     function concatBytes(...arrays) {
         const total = arrays.reduce((s, a) => s + a.length, 0);
         const out   = new Uint8Array(total);
@@ -453,6 +497,7 @@ const Signal = (() => {
 
     // ── Personal Session (Symmetric Ratchet) ─────────────────────
 
+    // [DOUBLE RATCHET] Initialise the ratchet state from the X3DH shared secret SK
     // Both parties derive two independent chain keys from SK.
     // Initiator: sends on chain_A, receives on chain_B.
     // Responder: sends on chain_B, receives on chain_A.
@@ -460,6 +505,7 @@ const Signal = (() => {
     // dhrPubJwk: initiator's EK pub JWK string for responder; null for initiator
     async function initPersonalSession(SK, isInitiator, dhsData = null, dhrPubJwk = null) {
         const zero    = new Uint8Array(32);
+        // Derive two chain keys and a root key from the shared secret
         const chain_A = await hkdf(SK, zero, 'UTHMChainA', 32);
         const chain_B = await hkdf(SK, zero, 'UTHMChainB', 32);
         const root_key = await hkdf(SK, zero, 'UTHMRootKey', 32);
@@ -495,16 +541,17 @@ const Signal = (() => {
         return {
             send_CK:      bufToBase64(final_send_CK),
             recv_CK:      bufToBase64(isInitiator ? chain_B : chain_A),
-            send_Ns:      0,
-            recv_Nr:      0,
-            recv_skipped: {},
+            send_Ns:      0,   // message counter for sending chain
+            recv_Nr:      0,   // message counter for receiving chain
+            recv_skipped: {},  // stores keys for out-of-order messages
             root_key:     bufToBase64(final_root_key),
-            DHs,
-            DHr:          dhrPubJwk || null,
+            DHs,               // our current DH ratchet keypair
+            DHr:          dhrPubJwk || null,  // peer's last known ratchet public key
             send_PN:      0
         };
     }
 
+    // Save a personal session to IDB (private key is stored as JWK string, not CryptoKey)
     async function savePersonalSession(myId, peerId, state) {
         // Exclude priv_key (CryptoKey is not JSON-serialisable) — priv_jwk string is kept for re-import on load
         const serializable = { ...state };
@@ -514,6 +561,7 @@ const Signal = (() => {
         await idbPut('sessions', { key: `${myId}_${peerId}`, state: JSON.stringify(serializable) });
     }
 
+    // Load a personal session from IDB and re-import the DH private key as a CryptoKey
     async function loadPersonalSession(myId, peerId) {
         const rec = await idbGet('sessions', `${myId}_${peerId}`);
         if (!rec) return null;
@@ -531,17 +579,19 @@ const Signal = (() => {
 
     // ── Message Key Derivation ────────────────────────────────────
 
+    // [DOUBLE RATCHET] Advance the sending chain by one step and return the next message key
     async function advanceSendChain(session) {
         const [ck2, mk] = await kdfCK(base64ToBuf(session.send_CK));
         session.send_CK = bufToBase64(ck2);
         session.send_Ns++;
-        return mk; // Uint8Array
+        return mk; // Uint8Array — use this to AES-encrypt the message
     }
 
+    // [DOUBLE RATCHET] Advance the receiving chain to message number targetN, caching skipped keys
     async function advanceRecvChain(session, targetN) {
         // Namespace skipped keys by DH epoch to avoid counter collisions across ratchet steps
         const epoch = session.DHr ? session.DHr.substring(0, 8) : 'init';
-        // Cache keys for any skipped messages
+        // Cache keys for any skipped messages (in case they arrive out of order)
         while (session.recv_Nr < targetN) {
             const [ck2, mk] = await kdfCK(base64ToBuf(session.recv_CK));
             session.recv_CK = bufToBase64(ck2);
@@ -557,10 +607,11 @@ const Signal = (() => {
     }
 
     // ── DH Ratchet Step ──────────────────────────────────────────
-    // Triggered when the receiver sees a new DH public key in an incoming header.
+    // [DOUBLE RATCHET] Triggered when the receiver sees a new DH public key in an incoming header.
     // Advances root key twice: once to derive the new recv chain, once for the new send chain.
+    // This gives "break-in recovery" — a new DH exchange heals forward secrecy after a compromise.
     async function advanceDHRatchet(session, newDHr_pub_jwk) {
-        session.send_PN = session.send_Ns;  // save previous chain length
+        session.send_PN = session.send_Ns;  // save previous chain length for out-of-order handling
         session.send_Ns = 0;
         session.recv_Nr = 0;
         session.DHr     = newDHr_pub_jwk;
@@ -592,20 +643,24 @@ const Signal = (() => {
         await idbPut('decrypted', { key: `${userId}_msg_${msgId}`, text });
     }
 
+    // Look up a previously decrypted message from IDB to avoid re-running the chain
     async function getCachedDecrypted(userId, msgId) {
         return idbGet('decrypted', `${userId}_msg_${msgId}`);
     }
 
+    // Cache the file key data for a file message (so download doesn't re-decrypt the chain)
     async function cacheFileKey(userId, msgId, data) {
         await idbPut('file_keys', { key: `${userId}_file_${msgId}`, ...data });
     }
 
+    // Retrieve a cached file key (fk, fi, fa) by message ID
     async function getCachedFileKey(userId, msgId) {
         return idbGet('file_keys', `${userId}_file_${msgId}`);
     }
 
     // ── Personal Message Encrypt ──────────────────────────────────
 
+    // [DOUBLE RATCHET ENCRYPT] Encrypt a personal message for one recipient
     // Returns: { message_content, iv, auth_tag, signal_header, signal_prekey_data }
     async function encryptPersonal(myUserId, peerUserId, plaintext, peerBundle) {
         const { IK_dh_priv, IK_dh_pub_jwk } = getIdentitySession();
@@ -623,24 +678,27 @@ const Signal = (() => {
             const spkChanged = peerBundle.spk_id
                                 && (!session.peer_spk_id || session.peer_spk_id !== peerBundle.spk_id);
             if (ikChanged || spkChanged) {
+                // Peer's identity changed — start a fresh X3DH session
                 await idbDelete('sessions', `${myUserId}_${peerUserId}`);
                 session = null;
             }
         }
 
         if (!session) {
+            // No existing session — run X3DH to establish a new one
             const x3dh = await x3dhInitiate(IK_dh_priv, IK_dh_pub_jwk, peerBundle);
             // Pass Bob's SPK as DHr so the initial send_CK is DH-derived (Signal spec requirement)
             session    = await initPersonalSession(x3dh.SK, true, null, peerBundle.spk_public);
             session.peer_spk_id = x3dh.spk_id;
-            session.peer_ik_pub = peerBundle.ik_dh_public;
+            session.peer_ik_pub = peerBundle.ik_dh_public; // track peer IK to detect recovery later
             pkeyData   = { ik_dh_pub: IK_dh_pub_jwk, ek_pub: x3dh.EK_pub_jwk, spk_id: x3dh.spk_id, opk_id: x3dh.opk_id };
         }
 
+        // Advance the sending chain and use the derived message key to encrypt
         const mk     = await advanceSendChain(session);
         const msgN   = session.send_Ns - 1;
         const header = { n: msgN, pn: session.send_PN, dh: session.DHs.pub_jwk };
-        const aad    = enc.encode(JSON.stringify(header));
+        const aad    = enc.encode(JSON.stringify(header)); // header is AAD — protects against reordering
         const result = await aesEncrypt(mk, enc.encode(plaintext), aad);
 
         await savePersonalSession(myUserId, peerUserId, session);
@@ -650,14 +708,16 @@ const Signal = (() => {
             iv:                 result.iv,
             auth_tag:           result.authTag,
             signal_header:      JSON.stringify(header),
-            signal_prekey_data: pkeyData ? JSON.stringify(pkeyData) : null
+            signal_prekey_data: pkeyData ? JSON.stringify(pkeyData) : null // only for first message
         };
     }
 
     // ── Personal Message Decrypt ──────────────────────────────────
 
+    // [DOUBLE RATCHET DECRYPT] Decrypt a personal message from a peer
     // Returns: decrypted plaintext string
     async function decryptPersonal(myUserId, peerUserId, msg) {
+        // Return cached plaintext if already decrypted this session
         const cached = await getCachedDecrypted(myUserId, msg.message_id);
         if (cached) return cached.text;
 
@@ -665,10 +725,12 @@ const Signal = (() => {
         let session = await loadPersonalSession(myUserId, peerUserId);
 
         if (!session) {
+            // No session in IDB — this must be the first message, so signal_prekey_data must exist
             if (!msg.signal_prekey_data) {
                 throw new Error('Message was encrypted in a previous session — ask sender to resend');
             }
             const pkData = JSON.parse(msg.signal_prekey_data);
+            // Look up the SPK private key the sender used
             const spkRec = await getSPKFromIDB(pkData.spk_id);
             if (!spkRec) throw new Error('Session key unavailable on this device — ask sender to resend');
 
@@ -678,6 +740,7 @@ const Signal = (() => {
                 opk_jwk = opkRec ? opkRec.priv_jwk : null;
             }
 
+            // Run X3DH respond to derive the same SK the sender computed
             const { SK } = await x3dhRespond(IK_dh_priv, spkRec.priv_jwk, opk_jwk, pkData);
             session = await initPersonalSession(SK, false,
                 { pub_jwk: spkRec.pub_jwk, priv_jwk: spkRec.priv_jwk },
@@ -688,11 +751,12 @@ const Signal = (() => {
         const header = JSON.parse(msg.signal_header);
         let mk;
 
-        // DH ratchet: advance when peer presents a new ratchet public key
+        // DH ratchet: advance when peer presents a new ratchet public key in the header
         if (header.dh && header.dh !== session.DHr) {
             await advanceDHRatchet(session, header.dh);
         }
 
+        // Check if this message key was already cached (out-of-order delivery)
         const epoch      = header.dh ? header.dh.substring(0, 8) : 'init';
         const skippedKey = `${epoch}:${header.n}`;
 
@@ -703,19 +767,21 @@ const Signal = (() => {
             mk = await advanceRecvChain(session, header.n);
         }
 
+        // Decrypt the message — header is used as AAD to prevent header tampering
         const aad   = enc.encode(JSON.stringify(header));
         const plain = await aesDecrypt(mk, msg.message_content, msg.iv, msg.auth_tag, aad);
         const text  = dec.decode(plain);
 
         await savePersonalSession(myUserId, peerUserId, session);
-        await cacheDecrypted(myUserId, msg.message_id, text);
+        await cacheDecrypted(myUserId, msg.message_id, text); // cache so repeat decryption is free
 
         return text;
     }
 
     // ── Personal File Encrypt ─────────────────────────────────────
 
-    // Encrypts file bytes. message_content = encrypted JSON {fk, fi, fa} (file key wrapped in ratchet).
+    // Encrypt a file for a personal chat recipient
+    // message_content = encrypted JSON {fk, fi, fa} (file key wrapped in ratchet).
     // Returns: { payload (for send_file.php), encryptedBuffer }
     async function encryptPersonalFile(myUserId, peerUserId, fileBuffer, peerBundle) {
         const { IK_dh_priv, IK_dh_pub_jwk } = getIdentitySession();
@@ -731,12 +797,14 @@ const Signal = (() => {
         }
 
         if (!session) {
+            // Establish a fresh X3DH session before encrypting
             const x3dh = await x3dhInitiate(IK_dh_priv, IK_dh_pub_jwk, peerBundle);
             session    = await initPersonalSession(x3dh.SK, true, null, peerBundle.spk_public);
             session.peer_spk_id = x3dh.spk_id;
             pkeyData   = { ik_dh_pub: IK_dh_pub_jwk, ek_pub: x3dh.EK_pub_jwk, spk_id: x3dh.spk_id, opk_id: x3dh.opk_id };
         }
 
+        // Step 1: Encrypt the file with a fresh random AES key (FK)
         // Encrypt file directly via Web Crypto API — no base64 roundtrip on large buffers
         const FK      = randomBytes(32);
         const fileIv  = randomBytes(IV_LEN);
@@ -752,7 +820,7 @@ const Signal = (() => {
         const fiB64 = bufToBase64(fileIv);
         const faB64 = bufToBase64(fileAuthTag);
 
-        // Wrap file key + file encryption params in the ratchet chain
+        // Step 2: Wrap the file key (FK) in the Double Ratchet chain so only the recipient can read it
         const mk     = await advanceSendChain(session);
         const msgN   = session.send_Ns - 1;
         const header = { n: msgN, pn: session.send_PN, dh: session.DHs.pub_jwk };
@@ -760,8 +828,8 @@ const Signal = (() => {
         const wrapPayload = JSON.stringify({ fk: fkB64, fi: fiB64, fa: faB64 });
         const wrapped = await aesEncrypt(mk, enc.encode(wrapPayload), aad);
 
-        // ECDH fallback: encrypt file key with static IK-to-IK shared secret so the
-        // receiver can decrypt even if their Signal session state is lost from IndexedDB.
+        // Step 3: ECDH fallback — also encrypt FK with IK-to-IK shared secret
+        // Allows the receiver to get FK even if their Signal session IDB is lost
         // ECDH(sender_IK_priv, receiver_IK_pub) == ECDH(receiver_IK_priv, sender_IK_pub)
         const sharedFB   = await dhBits(IK_dh_priv, peerBundle.ik_dh_public);
         const fbEncKey   = await hkdf(sharedFB, new Uint8Array(32), 'UTHMFileKeyFallback', 32);
@@ -773,14 +841,14 @@ const Signal = (() => {
 
         return {
             payload: {
-                message_content:    wrapped.ciphertext,
+                message_content:    wrapped.ciphertext, // Signal-wrapped file key
                 iv:                 wrapped.iv,
                 auth_tag:           wrapped.authTag,
                 signal_header:      JSON.stringify(header),
                 signal_prekey_data: pkeyData ? JSON.stringify(pkeyData) : null,
-                ecdh_file_key:      ecdhFileKey
+                ecdh_file_key:      ecdhFileKey // fallback file key
             },
-            encryptedBuffer: cipherBytes.buffer,
+            encryptedBuffer: cipherBytes.buffer, // the actual encrypted file bytes
             fileKeyData:     { fk: fkB64, fi: fiB64, fa: faB64 }
         };
     }
@@ -792,7 +860,7 @@ const Signal = (() => {
 
         if (!fileKeyData) {
             try {
-                // Primary path: Signal double-ratchet wrapper
+                // Primary path: Signal double-ratchet wrapper (decryptPersonal returns the FK JSON)
                 const wrapJson = await decryptPersonal(myUserId, peerUserId, msg);
                 const wrap     = JSON.parse(wrapJson);
                 fileKeyData    = { fk: wrap.fk, fi: wrap.fi, fa: wrap.fa };
@@ -815,10 +883,12 @@ const Signal = (() => {
             }
         }
 
+        // Use the file key to decrypt the actual file bytes
         const FK      = base64ToBuf(fileKeyData.fk);
         const fileKey = await crypto.subtle.importKey('raw', FK, { name: AES_MODE }, false, ['decrypt']);
         const authTag = base64ToBuf(fileKeyData.fa);
         const encArr  = new Uint8Array(encryptedBuffer);
+        // Reattach auth tag so WebCrypto can verify integrity
         const combined = new Uint8Array(encArr.length + authTag.length);
         combined.set(encArr);
         combined.set(authTag, encArr.length);
@@ -828,11 +898,12 @@ const Signal = (() => {
         );
     }
 
-    // Cache file key at load time (called during loadMessages for receiver's file messages)
+    // Pre-cache the file key during message load so the download button works instantly
     async function cachePersonalFileKey(myUserId, peerUserId, msg) {
         const cached = await getCachedFileKey(myUserId, msg.message_id);
         if (cached) return;
         try {
+            // Primary: derive file key via Signal ratchet
             const wrapJson = await decryptPersonal(myUserId, peerUserId, msg);
             const wrap     = JSON.parse(wrapJson);
             await cacheFileKey(myUserId, msg.message_id, { fk: wrap.fk, fi: wrap.fi, fa: wrap.fa });
@@ -852,38 +923,44 @@ const Signal = (() => {
 
     // ── Sender Key (Group) ────────────────────────────────────────
 
+    // [SENDER KEY] Generate a new sender key state for group messaging
+    // CK = chain key (ratchets forward each message), sign key = authenticates messages
     async function generateSenderKey() {
         const sigKP        = await genECDSA();
         const sign_pub_jwk  = JSON.stringify(await crypto.subtle.exportKey('jwk', sigKP.publicKey));
         const sign_priv_jwk = JSON.stringify(await crypto.subtle.exportKey('jwk', sigKP.privateKey));
         return {
-            CK:            bufToBase64(randomBytes(32)),
-            iteration:     0,
+            CK:            bufToBase64(randomBytes(32)), // starting chain key
+            iteration:     0,                            // message counter
             sign_pub_jwk,
             sign_priv_jwk
         };
     }
 
-    // Encrypt sender key state (without priv key) for a group member
+    // Encrypt our sender key state for a group member using ECDH (IK-to-IK shared secret)
     async function encryptSKForMember(skState, myIK_dh_priv, memberIK_pub_jwk) {
         const shared  = await dhBits(myIK_dh_priv, memberIK_pub_jwk);
         const encKey  = await hkdf(shared, new Uint8Array(32), 'UTHMSKDist', 32);
+        // Only distribute the chain key and signing public key — never the signing private key
         const payload = JSON.stringify({ CK: skState.CK, iteration: skState.iteration, sign_pub_jwk: skState.sign_pub_jwk });
         return aesEncrypt(encKey, enc.encode(payload), new Uint8Array(0));
     }
 
-    // Decrypt sender key distribution from a sender
+    // Decrypt a sender key distribution received from a group member
     async function decryptSKFromSender(encDist, myIK_dh_priv, senderIK_pub_jwk) {
+        // Derive the same ECDH shared secret the sender used
         const shared  = await dhBits(myIK_dh_priv, senderIK_pub_jwk);
         const encKey  = await hkdf(shared, new Uint8Array(32), 'UTHMSKDist', 32);
         const plain   = await aesDecrypt(encKey, encDist.ciphertext, encDist.iv, encDist.authTag, new Uint8Array(0));
         return JSON.parse(dec.decode(plain));
     }
 
+    // Save a group sender key state to IDB keyed by groupId + senderId
     async function saveSenderKeyToIDB(groupId, senderId, skState) {
         await idbPut('sender_keys', { key: `${groupId}_${senderId}`, state: JSON.stringify(skState) });
     }
 
+    // Load a group sender key state from IDB
     async function loadSenderKeyFromIDB(groupId, senderId) {
         const rec = await idbGet('sender_keys', `${groupId}_${senderId}`);
         return rec ? JSON.parse(rec.state) : null;
@@ -891,8 +968,10 @@ const Signal = (() => {
 
     // ── Sender Key Encrypt ────────────────────────────────────────
 
+    // [SENDER KEY ENCRYPT] Encrypt a group message using the sender's chain key
     // Returns: { message_content, iv, auth_tag, signal_header } + updated skState
     async function skEncrypt(skState, plaintext) {
+        // Advance the chain to derive this message's key
         const [ck2, mk] = await kdfCK(base64ToBuf(skState.CK));
         const iter      = skState.iteration;
         skState.CK      = bufToBase64(ck2);
@@ -900,7 +979,7 @@ const Signal = (() => {
 
         const result = await aesEncrypt(mk, enc.encode(plaintext), new Uint8Array(0));
 
-        // Sign the ciphertext for authenticity
+        // Sign the ciphertext so group members can verify it came from us
         const sign_priv = await crypto.subtle.importKey(
             'jwk', JSON.parse(skState.sign_priv_jwk),
             { name: 'ECDSA', namedCurve: CURVE }, false, ['sign']
@@ -914,24 +993,28 @@ const Signal = (() => {
             message_content: result.ciphertext,
             iv:              result.iv,
             auth_tag:        result.authTag,
+            // signal_header carries the chain iteration number and signature
             signal_header:   JSON.stringify({ type: 'sk', iter, sig: bufToBase64(new Uint8Array(sig)) })
         };
     }
 
     // ── Sender Key Decrypt ────────────────────────────────────────
 
+    // [SENDER KEY DECRYPT] Decrypt a group message from a specific sender
     async function skDecrypt(skState, msg) {
         const header   = JSON.parse(msg.signal_header);
-        const targetIter = header.iter;
+        const targetIter = header.iter; // which iteration of the sender's chain was used
 
-        // Advance chain to targetIter, caching skipped keys
+        // Cache skipped iterations in case messages arrive out of order
         skState.sk_skipped = skState.sk_skipped || {};
 
         let mk;
         if (skState.sk_skipped[targetIter] !== undefined) {
+            // Use previously saved skipped key
             mk = base64ToBuf(skState.sk_skipped[targetIter]);
             delete skState.sk_skipped[targetIter];
         } else {
+            // Advance the chain, caching any skipped message keys along the way
             while (skState.iteration < targetIter) {
                 const [ck2, m] = await kdfCK(base64ToBuf(skState.CK));
                 skState.CK = bufToBase64(ck2);
@@ -944,7 +1027,7 @@ const Signal = (() => {
             mk = m;
         }
 
-        // Verify signature
+        // Verify the ECDSA signature to confirm the message came from the real sender
         const sign_pub = await crypto.subtle.importKey(
             'jwk', JSON.parse(skState.sign_pub_jwk),
             { name: 'ECDSA', namedCurve: CURVE }, false, ['verify']
@@ -962,7 +1045,7 @@ const Signal = (() => {
 
     // ── Group Message Encrypt / Decrypt ──────────────────────────
 
-    // Encrypt a group text message using the sender key
+    // [GROUP ENCRYPT] Encrypt a group text message using the sender key
     // members: [{userId, ik_dh_public}] — needed only when distributing SK for the first time
     async function encryptGroup(myUserId, groupId, plaintext, members, apiBase) {
         const { IK_dh_priv, IK_dh_pub_jwk, IK_sign_priv } = getIdentitySession();
@@ -970,6 +1053,7 @@ const Signal = (() => {
         let skState = await loadSenderKeyFromIDB(groupId, myUserId);
 
         if (!skState || !skState.sign_priv_jwk) {
+            // First message to this group — generate and distribute a new sender key
             skState = await generateSenderKey();
             // Distribute BEFORE encrypting so members receive the initial CK (iteration=0).
             // Distributing after skEncrypt would give them iteration=1 and they could
@@ -989,6 +1073,7 @@ const Signal = (() => {
         };
     }
 
+    // Distribute our sender key to each group member by encrypting it with their IK
     async function distributeSenderKey(skState, myUserId, groupId, members, IK_dh_priv, apiBase) {
         const distributions = [];
         for (const member of members) {
@@ -1007,6 +1092,7 @@ const Signal = (() => {
         if (distributions.length === 0) return;
 
         try {
+            // POST sender key distributions to server for members to retrieve
             await fetch(`${apiBase}/signal_save_sender_key.php`, {
                 method:  'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1015,14 +1101,16 @@ const Signal = (() => {
         } catch (_) {}
     }
 
-    // Decrypt a group text message
+    // [GROUP DECRYPT] Decrypt a group text message from another member
     async function decryptGroup(myUserId, groupId, senderId, senderIKPub, msg, apiBase) {
+        // Return cached plaintext if already decrypted
         const cached = await getCachedDecrypted(myUserId, msg.message_id);
         if (cached) return cached.text;
 
         let skState = await loadSenderKeyFromIDB(groupId, senderId);
 
         if (!skState) {
+            // No local sender key — fetch it from the server distribution
             skState = await fetchAndSetSenderKey(myUserId, groupId, senderId, senderIKPub, apiBase);
         }
 
@@ -1049,6 +1137,7 @@ const Signal = (() => {
         return text;
     }
 
+    // Fetch the sender key distribution from the server and decrypt it with our IK
     async function fetchAndSetSenderKey(myUserId, groupId, senderId, senderIKPub, apiBase) {
         try {
             const { IK_dh_priv } = getIdentitySession();
@@ -1056,6 +1145,7 @@ const Signal = (() => {
             const data = await res.json();
             if (!data.success || !data.distribution) return null;
 
+            // Decrypt the distribution using ECDH with the sender's IK
             const skState = await decryptSKFromSender(
                 { ciphertext: data.distribution.ciphertext, iv: data.distribution.iv, authTag: data.distribution.auth_tag },
                 IK_dh_priv, senderIKPub
@@ -1070,6 +1160,7 @@ const Signal = (() => {
 
     // ── Group File Encrypt / Decrypt ──────────────────────────────
 
+    // [GROUP FILE ENCRYPT] Encrypt a file for a group chat using the sender key
     async function encryptGroupFile(myUserId, groupId, fileBuffer, members, apiBase) {
         const { IK_dh_priv } = getIdentitySession();
 
@@ -1081,6 +1172,7 @@ const Signal = (() => {
             await distributeSenderKey(skState, myUserId, groupId, members, IK_dh_priv, apiBase);
         }
 
+        // Step 1: Encrypt the file with a fresh random AES key
         // Encrypt file directly via Web Crypto API — no base64 roundtrip on large buffers
         const FK      = randomBytes(32);
         const fileIv  = randomBytes(IV_LEN);
@@ -1096,6 +1188,7 @@ const Signal = (() => {
         const fiB64 = bufToBase64(fileIv);
         const faB64 = bufToBase64(fileAuthTag);
 
+        // Step 2: Wrap the file key in the sender key chain so group members can get it
         const wrapStr = JSON.stringify({ fk: fkB64, fi: fiB64, fa: faB64 });
         const result  = await skEncrypt(skState, wrapStr);
 
@@ -1103,26 +1196,29 @@ const Signal = (() => {
 
         return {
             payload: {
-                message_content: result.message_content,
+                message_content: result.message_content, // sender-key-wrapped file key
                 iv:              result.iv,
                 auth_tag:        result.auth_tag,
                 signal_header:   result.signal_header
             },
-            encryptedBuffer: cipherBytes.buffer,
+            encryptedBuffer: cipherBytes.buffer, // the actual encrypted file bytes
             fileKeyData:     { fk: fkB64, fi: fiB64, fa: faB64 }
         };
     }
 
+    // [GROUP FILE DECRYPT] Decrypt a group file using the cached or fetched sender key
     async function decryptGroupFile(myUserId, groupId, senderId, senderIKPub, msg, encryptedBuffer, apiBase) {
         let fileKeyData = await getCachedFileKey(myUserId, msg.message_id);
 
         if (!fileKeyData) {
+            // Decrypt the sender key wrapper to get the file key
             const wrapJson = await decryptGroup(myUserId, groupId, senderId, senderIKPub, msg, apiBase);
             const wrap     = JSON.parse(wrapJson);
             fileKeyData    = { fk: wrap.fk, fi: wrap.fi, fa: wrap.fa };
             await cacheFileKey(myUserId, msg.message_id, fileKeyData);
         }
 
+        // Use the extracted file key to decrypt the actual file bytes
         const FK      = base64ToBuf(fileKeyData.fk);
         const fileKey = await crypto.subtle.importKey('raw', FK, { name: AES_MODE }, false, ['decrypt']);
         const authTag = base64ToBuf(fileKeyData.fa);
@@ -1136,7 +1232,7 @@ const Signal = (() => {
         );
     }
 
-    // Cache group file key at load time
+    // Pre-cache group file key during message load so the download button works instantly
     async function cacheGroupFileKey(myUserId, groupId, senderId, senderIKPub, msg, apiBase) {
         const cached = await getCachedFileKey(myUserId, msg.message_id);
         if (cached) return;

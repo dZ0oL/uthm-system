@@ -1,10 +1,17 @@
 <?php
+// ============================================================
+// api/send_file.php
+// Receives an already-encrypted file blob from the browser and saves it.
+// The file is encrypted client-side before upload — the server stores
+// opaque binary and never sees the original file content.
+// ============================================================
 ob_start();
 error_reporting(0);
 ini_set('display_errors', 0);
 require_once '../config/database.php';
 ob_clean();
 
+// Only logged-in staff may upload files
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'staff') {
     http_response_code(401);
     echo json_encode(['error' => 'Unauthorised']);
@@ -21,12 +28,13 @@ $user_id            = $_SESSION['user_id'];
 $receiver_id        = intval($_POST['receiver_id']  ?? 0);
 $group_id           = intval($_POST['group_id']     ?? 0);
 $message_type       = $_POST['message_type']        ?? '';
-$iv                 = $_POST['iv']                  ?? '';
-$auth_tag           = $_POST['auth_tag']            ?? '';
-$encrypted_aes_key  = $_POST['encrypted_aes_key']  ?? null;
-$message_content    = $_POST['message_content']     ?? '';   // Signal: encrypted file key wrapper
-$signal_header      = $_POST['signal_header']       ?? null;
-$signal_prekey_data = $_POST['signal_prekey_data']  ?? null;
+$iv                 = $_POST['iv']                  ?? '';  // file AES-GCM nonce (not used server-side)
+$auth_tag           = $_POST['auth_tag']            ?? '';  // file AES-GCM auth tag (not used server-side)
+$encrypted_aes_key  = $_POST['encrypted_aes_key']  ?? null; // legacy fallback file key
+// message_content holds the Signal-wrapped file key (fk/fi/fa), not the file itself
+$message_content    = $_POST['message_content']     ?? '';
+$signal_header      = $_POST['signal_header']       ?? null; // Double Ratchet header for the key wrapper
+$signal_prekey_data = $_POST['signal_prekey_data']  ?? null; // X3DH params if this is the first message
 
 // Validate message type
 $valid_types = ['personal_file', 'group_file'];
@@ -56,11 +64,11 @@ if (!isset($_FILES['encrypted_file']) || $_FILES['encrypted_file']['error'] !== 
 }
 
 $file          = $_FILES['encrypted_file'];
-$original_name = basename($file['name']);
+$original_name = basename($file['name']); // original filename for display (not a security boundary)
 $file_size     = $file['size'];
-$file_type     = $_POST['file_type'] ?? 'application/octet-stream';
+$file_type     = $_POST['file_type'] ?? 'application/octet-stream'; // MIME type declared by client
 
-// Max 5MB — encrypted file is slightly larger than original
+// Max 5MB — encrypted file is slightly larger than original due to AES-GCM overhead
 $max_size = 5 * 1024 * 1024 + 1024; // 5MB + 1KB buffer
 if ($file_size > $max_size) {
     http_response_code(400);
@@ -68,7 +76,7 @@ if ($file_size > $max_size) {
     exit;
 }
 
-// Allowed MIME types
+// Allowlist MIME types — rejects executable files and other dangerous types
 $allowed_types = [
     'application/pdf',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -88,7 +96,8 @@ if (!is_dir($upload_dir)) {
     mkdir($upload_dir, 0755, true);
 }
 
-// Generate unique filename — no extension since it's encrypted binary
+// Generate a random filename with no extension — the content is opaque ciphertext
+// Using random hex means the filename reveals nothing about the original file
 $stored_name = bin2hex(random_bytes(16));
 $file_path   = 'uploads/encrypted/' . $stored_name;
 $full_path   = __DIR__ . '/../' . $file_path;
@@ -100,7 +109,7 @@ if (!move_uploaded_file($file['tmp_name'], $full_path)) {
 }
 
 try {
-    // Save message record
+    // Save the message record — message_content is the encrypted file key wrapper, not the file itself
     $stmt = $pdo->prepare("
         INSERT INTO messages
             (sender_id, receiver_id, group_id, message_type,
@@ -120,15 +129,15 @@ try {
         $encrypted_aes_key ?: null,
         $signal_header      ?: null,
         $signal_prekey_data ?: null,
-        $original_name,
+        $original_name, // stored only for display — download uses the random $stored_name path
         $file_size,
         $file_type,
-        $file_path
+        $file_path      // path to the encrypted blob on disk
     ]);
 
     $message_id = $pdo->lastInsertId();
 
-    // Mirror to secure backup DB
+    // Mirror to secure backup DB — backup also stores only ciphertext
     try {
         $pdo_secure = new PDO(
             "mysql:host=$host;dbname=uthm_messaging_secure;charset=utf8mb4",
@@ -164,7 +173,7 @@ try {
         error_log('Backup DB file mirror failed: ' . $e->getMessage());
     }
 
-    // Audit log
+    // Audit log — record file name and type but not content
     $pdo->prepare("
         INSERT INTO audit_logs (user_id, action, details, ip_address)
         VALUES (?, 'Send File', ?, ?)
@@ -181,7 +190,7 @@ try {
     ]);
 
 } catch (PDOException $e) {
-    // Clean up uploaded file if DB insert fails
+    // Clean up the uploaded file if the DB insert fails
     if (file_exists($full_path)) unlink($full_path);
     error_log('send_file error: ' . $e->getMessage());
     http_response_code(500);

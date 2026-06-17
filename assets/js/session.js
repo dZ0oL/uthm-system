@@ -3,11 +3,15 @@
  * Unlocks ECDH private key on every staff page load.
  * Also validates session token to terminate previous device sessions.
  */
+
+// Runs automatically on page load for any staff or admin page
 (async () => {
     const staffUserId = window.__STAFF_USER_ID;
     const adminUserId = window.__ADMIN_USER_ID;
+    // Skip entirely if there is no logged-in user on this page
     if (!staffUserId && !adminUserId) return;
     if (adminUserId && !staffUserId) {
+        // Admin pages only need session polling — no crypto keys to unlock
         await checkSessionValidity();
         setInterval(checkSessionValidity, 60000); // poll every 60 s so displaced admins see the modal
         return;
@@ -20,9 +24,10 @@
         return;
     }
 
+    // Password is saved to sessionStorage at login time so we don't need to ask again
     let password = sessionStorage.getItem('_tmp_pw');
 
-    // No password available — show modal
+    // No password available — page was opened in a new tab or sessionStorage was cleared
     if (!password) {
         console.warn('[Session] No password — showing unlock modal');
         password = await askForPassword();
@@ -34,8 +39,8 @@
 })();
 
 // ── Session token validation ──────────────────────────────────
-// Checks on every page load that this device's session is still valid.
-// Shows a clean overlay message before redirecting.
+// The server stores one session_token per user — logging in from another device replaces it.
+// This function checks whether the token still matches, detecting displaced sessions.
 async function checkSessionValidity() {
     try {
         const apiBase = window.__API_BASE || '/api';
@@ -44,6 +49,7 @@ async function checkSessionValidity() {
 
         if (!data.valid) {
             if (data.reason === 'session_terminated') {
+                // Another device logged in — show a friendly message before redirecting
                 showSessionMessage(
                     'Session Terminated',
                     'Your account was logged in from another device. ' +
@@ -51,6 +57,7 @@ async function checkSessionValidity() {
                     'warning'
                 );
             } else if (data.reason === 'account_deactivated') {
+                // Admin deactivated this account
                 showSessionMessage(
                     'Account Deactivated',
                     'Your account has been deactivated by an administrator. ' +
@@ -126,6 +133,7 @@ function showSessionMessage(title, message, type) {
     document.body.appendChild(overlay);
 }
 
+// Fetch encrypted keys from the server and unlock them with the user's password
 async function unlockKey(staffUserId, password) {
     try {
         const apiBase = window.__API_BASE || '/api';
@@ -145,17 +153,19 @@ async function unlockKey(staffUserId, password) {
         }
 
         // ── Legacy ECDH key (needed for decrypting old messages) ──
+        // Decrypt the AES-wrapped ECDH private key using the user's password
         const privateKey = await UTHMCrypto.unlockPrivateKey(
             keyData.encrypted_private_key,
             keyData.key_iv,
             keyData.key_auth_tag,
             password
         );
+        // Store the unlocked key in memory for this page session
         UTHMCrypto.setSessionKey(staffUserId, privateKey);
 
         // ── Signal Protocol keys ───────────────────────────────────
         if (keyData.encrypted_ik_dh) {
-            // Signal keys exist on server — unlock them
+            // Signal keys exist on server — unlock IK private keys with the user's password
             try {
                 const { IK_dh_priv, IK_sign_priv } = await Signal.unlockKeys(keyData, password);
                 Signal.setIdentitySession(
@@ -166,7 +176,7 @@ async function unlockKey(staffUserId, password) {
                 // Check if SPK private key is in IDB (needed for X3DH respond)
                 const spkRec = keyData.spk_id ? await Signal.getSPKFromIDB(keyData.spk_id) : null;
                 if (!spkRec) {
-                    // SPK missing from IDB (new device or IDB cleared) — regenerate
+                    // SPK missing from IDB (new device or IDB cleared) — regenerate and register
                     await _regeneratePreKeys(staffUserId, IK_sign_priv, apiBase);
                 }
                 console.log('[Session] Signal keys unlocked ✅');
@@ -174,7 +184,7 @@ async function unlockKey(staffUserId, password) {
                 console.warn('[Session] Signal key unlock failed:', signalErr.message);
             }
         } else {
-            // First login — generate Signal keys
+            // First login — Signal keys don't exist yet, generate them now
             try {
                 await _initSignalKeys(staffUserId, password, apiBase);
                 console.log('[Session] Signal keys generated ✅');
@@ -184,11 +194,14 @@ async function unlockKey(staffUserId, password) {
         }
 
         console.log('[Session] Keys unlocked ✅');
+        // Keep password in sessionStorage so navigation between pages doesn't prompt again
         sessionStorage.setItem('_tmp_pw', password);
 
+        // Remove the unlock modal if it was shown
         const modal = document.getElementById('_session_modal');
         if (modal) modal.remove();
 
+        // If the chat page is loaded, start chat now that keys are ready
         if (typeof initChat === 'function') {
             initChat();
         }
@@ -200,7 +213,7 @@ async function unlockKey(staffUserId, password) {
     }
 }
 
-// Generate Signal keys for the first time (called once per account)
+// [FIRST LOGIN] Generate brand-new Signal keys and register them with the server
 async function _initSignalKeys(userId, password, apiBase) {
     // Wipe stale cryptographic session state (sessions, prekeys, sender keys).
     // These are bound to the old IK and invalid once a new identity is generated.
@@ -208,21 +221,23 @@ async function _initSignalKeys(userId, password, apiBase) {
     // it is local content, not key material, same as Signal's own local DB.
     await Signal.clearCryptoState();
 
+    // Generate IK (identity key), SPK (signed prekey), and 10 OPKs (one-time prekeys)
     const identKeys = await Signal.generateKeys(password);
     const spkData   = await Signal.generateSPK(identKeys.IK_sign.privateKey);
     const opks      = await Signal.generateOPKs(10);
 
-    // Save prekey private keys to IDB
+    // Save prekey private keys to IDB — the server only stores the public halves
     await Signal.saveSPKtoIDB(spkData);
     await Signal.saveOPKsToIDB(opks);
 
-    // Register with server
+    // Send public keys to server so other users can find them for X3DH
     const res = await fetch(apiBase + '/signal_register_keys.php', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
             ik_dh_public:    identKeys.ik_dh_public,
             ik_sign_public:  identKeys.ik_sign_public,
+            // Private keys go to server encrypted — the server cannot decrypt them
             encrypted_ik_dh: identKeys.encrypted_ik_dh,
             ik_dh_iv:        identKeys.ik_dh_iv,
             ik_dh_auth_tag:  identKeys.ik_dh_auth_tag,
@@ -237,6 +252,7 @@ async function _initSignalKeys(userId, password, apiBase) {
     });
     if (!res.ok) throw new Error('Signal key registration failed: ' + res.status);
 
+    // Load keys into the in-memory identity session for immediate use
     Signal.setIdentitySession(
         userId,
         identKeys.IK_dh.privateKey,
@@ -246,7 +262,8 @@ async function _initSignalKeys(userId, password, apiBase) {
     );
 }
 
-// Regenerate SPK + OPKs (when IDB is cleared on existing account)
+// [DEVICE RECOVERY] Regenerate only SPK + OPKs when IDB was cleared on an existing account
+// The identity key (IK) stays the same — only the prekeys are refreshed
 async function _regeneratePreKeys(userId, IK_sign_priv, apiBase) {
     const spkData = await Signal.generateSPK(IK_sign_priv);
     const opks    = await Signal.generateOPKs(10);
@@ -267,6 +284,7 @@ async function _regeneratePreKeys(userId, IK_sign_priv, apiBase) {
     }).catch(() => {});
 }
 
+// Show a password prompt modal when sessionStorage has no password stored
 function askForPassword() {
     return new Promise((resolve) => {
         const existing = document.getElementById('_session_modal');
@@ -322,12 +340,14 @@ function askForPassword() {
         };
 
         btn.addEventListener('click', submit);
+        // Allow submitting with Enter key
         input.addEventListener('keydown', e => {
             if (e.key === 'Enter') submit();
         });
     });
 }
 
+// Called when unlockKey fails — show an error in the modal and ask for password again
 function showPasswordError() {
     const errDiv = document.getElementById('_session_error');
     const btn    = document.getElementById('_session_pw_btn');
@@ -340,7 +360,7 @@ function showPasswordError() {
     if (btn)   { btn.textContent = 'Unlock Session'; btn.disabled = false; }
     if (input) { input.value = ''; input.focus(); }
 
-    // Ask for password again
+    // Ask for password again and retry key unlock
     askForPassword().then(pw => {
         if (pw) unlockKey(window.__STAFF_USER_ID, pw);
     });

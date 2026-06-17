@@ -14,7 +14,7 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'staff') {
 }
 
 $user_id           = $_SESSION['user_id'];
-$current_chat_type = isset($_GET['type']) ? $_GET['type'] : 'group';
+$current_chat_type = $_GET['type'] ?? 'group';
 $current_chat_id   = isset($_GET['id']) ? intval($_GET['id']) : null;
 
 // Get user's groups
@@ -418,11 +418,12 @@ include '../includes/header.php';
 <?php if ($chat_info && $current_chat_id): ?>
 <script>
 // ── Chat configuration ────────────────────────────────────────
+// PHP injects server-side values here so JavaScript knows who is chatting with whom
 const CHAT_CONFIG = {
     myUserId:    <?php echo intval($user_id); ?>,
     myPublicKey: <?php echo json_encode($my_public_key); ?>,
-    chatType:    <?php echo json_encode($current_chat_type); ?>,
-    chatId:      <?php echo intval($current_chat_id); ?>,
+    chatType:    <?php echo json_encode($current_chat_type); ?>,  // 'personal' or 'group'
+    chatId:      <?php echo intval($current_chat_id); ?>,         // peer user_id or group_id
     apiBase:     window.__API_BASE || '/api',
     // Peer's legacy ECDH public key — used as fallback when Signal session is lost
     peerEcdhKey: <?php echo json_encode(
@@ -450,16 +451,19 @@ const _fileMessages  = {};   // message_id → file metadata, avoids embedding J
 const _decryptFailed = new Set(); // message IDs that permanently failed this session
 
 // ── Account recovery state ────────────────────────────────────
-// If set, messages older than this ISO timestamp are hidden (they
-// used previous keys and cannot be decrypted after SSS recovery).
+// After SSS account recovery the user gets new Signal keys — old messages cannot be decrypted.
+// We store a cutoff timestamp so pre-recovery messages are silently hidden instead of shown as errors.
+// _recoveryCutoff is an ISO UTC string set by change_password_required.php after password change.
 const _recoveryCutoffKey  = `_recovery_cutoff_${CHAT_CONFIG.myUserId}`;
 const _recoveryDismissKey = `_recovery_notice_dismissed_${CHAT_CONFIG.myUserId}`;
-const _recoveryCutoff     = localStorage.getItem(_recoveryCutoffKey);
+const _recoveryCutoff     = localStorage.getItem(_recoveryCutoffKey); // null if no recovery happened
 
+// Returns true if the recovery info banner should be shown (recovery happened, not yet dismissed)
 function _recoveryNoticeNeeded() {
     return !!_recoveryCutoff && !localStorage.getItem(_recoveryDismissKey);
 }
 
+// Called when the user clicks × on the recovery notice — persists the dismissal
 function dismissRecoveryNotice() {
     localStorage.setItem(_recoveryDismissKey, '1');
     const el = document.getElementById('recovery-notice');
@@ -479,8 +483,10 @@ const MEMBER_PALETTE = [
 ];
 
 // ── initChat — called by DOMContentLoaded or session.js ──────
+// Entry point for the chat page — enables controls and starts the message polling loop.
+// Called either on DOMContentLoaded (if key already in memory) or by session.js after unlocking.
 async function initChat() {
-    if (_chatInitialised) return;
+    if (_chatInitialised) return; // prevent running twice if both triggers fire
 
     const keyStatus = document.getElementById('key-status');
     const input     = document.getElementById('message-input');
@@ -489,6 +495,7 @@ async function initChat() {
     const noKeyWarn = document.getElementById('no-key-warning');
     const privateKey= UTHMCrypto.getSessionKey();
 
+    // Keys are not available — leave controls disabled and show a warning
     if (!privateKey && !Signal.hasIdentitySession()) {
         keyStatus.textContent   = '⚠ Key not loaded';
         keyStatus.className     = 'text-danger small';
@@ -625,6 +632,9 @@ function clearFileSelection() {
 }
 
 // ── Load and decrypt messages ────────────────────────────────
+// Fetches ciphertext from the server, decrypts each message in the browser, then renders them.
+// Called once on initChat() and then every 5 seconds to poll for new messages (SSE not used here).
+// All decryption happens client-side — the server only returns ciphertext it cannot read.
 async function loadMessages() {
     try {
         const response = await fetch(
@@ -638,13 +648,13 @@ async function loadMessages() {
         if (loadingMsg) loadingMsg.remove();
 
         const privateKey = UTHMCrypto.getSessionKey();
-        const rendered   = [];
+        const rendered   = []; // accumulate decrypted messages before touching the DOM
 
         for (const msg of data.messages) {
             const isMine    = msg.sender_id == CHAT_CONFIG.myUserId;
             const isFile    = msg.message_type === 'personal_file' ||
                               msg.message_type === 'group_file';
-            const isSignal  = !!msg.signal_header;
+            const isSignal  = !!msg.signal_header; // true = Signal protocol; false = legacy ECDH
             let   text      = '';
 
             // Personal message failures are permanent (session loss can't self-heal).
@@ -764,14 +774,17 @@ async function loadMessages() {
             rendered.push({ msg, text, isMine, isFile });
         }
 
+        // Only rebuild the DOM when the message count changes — avoids scroll-jump on every poll
         if (container.children.length !== rendered.length) {
             container.innerHTML = '';
             let prevSenderId = null;
             for (const { msg, text, isMine, isFile } of rendered) {
+                // Group consecutive messages from the same sender visually
                 const isFirstInRow = msg.sender_id !== prevSenderId;
                 container.appendChild(buildBubble(msg, text, isMine, isFile, isFirstInRow));
                 prevSenderId = msg.sender_id;
             }
+            // Scroll to the bottom after rebuilding so the newest message is visible
             const chatBox = document.getElementById('chat-box');
             chatBox.scrollTop = chatBox.scrollHeight;
         }
@@ -798,7 +811,7 @@ async function loadMessages() {
             chatBox.insertBefore(noticeEl, chatBox.firstChild);
         }
 
-        markRead(); // tell the server this conversation has been seen
+        markRead(); // notify the server that we read this conversation (clears unread badge)
 
     } catch (err) {
         console.error('loadMessages error:', err);
@@ -874,22 +887,26 @@ function buildBubble(msg, text, isMine, isFile, isFirstInRow = true) {
 }
 
 // ── Shared: build payload, post to send_message.php, cache ───
+// Encrypts a text message and sends it. Handles both Signal (preferred) and legacy ECDH paths.
 async function _sendEncryptedText(plaintext) {
     const privateKey = UTHMCrypto.getSessionKey();
     let payload = { message_type: CHAT_CONFIG.chatType };
 
     if (CHAT_CONFIG.chatType === 'personal') {
         if (Signal.hasIdentitySession()) {
+            // ── Signal personal message ───────────────────────────
+            // Fetch the recipient's key bundle (IK, SPK, OPK) from the server
             const bundleRes = await fetch(`${CHAT_CONFIG.apiBase}/signal_get_key_bundle.php?user_id=${CHAT_CONFIG.chatId}`);
             const bundle    = await bundleRes.json();
             if (!bundle.success) throw new Error('Recipient has no Signal keys — they must log in first.');
+            // Run X3DH + Double Ratchet to produce ciphertext only the recipient can read
             const enc = await Signal.encryptPersonal(CHAT_CONFIG.myUserId, CHAT_CONFIG.chatId, plaintext, bundle);
             payload.receiver_id        = CHAT_CONFIG.chatId;
-            payload.message_content    = enc.message_content;
+            payload.message_content    = enc.message_content; // ciphertext
             payload.iv                 = enc.iv;
             payload.auth_tag           = enc.auth_tag;
-            payload.signal_header      = enc.signal_header;
-            payload.signal_prekey_data = enc.signal_prekey_data;
+            payload.signal_header      = enc.signal_header;      // Double Ratchet metadata
+            payload.signal_prekey_data = enc.signal_prekey_data; // X3DH params (first msg only)
 
             // ECDH fallback: also encrypt with static keys so either party can
             // recover if Signal session state (IDB) is lost or cleared.
@@ -938,6 +955,7 @@ async function _sendEncryptedText(plaintext) {
         }
     }
 
+    // POST the encrypted payload to the server — server stores ciphertext and returns the new message_id
     const res    = await fetch(`${CHAT_CONFIG.apiBase}/send_message.php`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -946,6 +964,7 @@ async function _sendEncryptedText(plaintext) {
     const result = await res.json();
     if (!result.success) throw new Error(result.error || 'Send failed');
 
+    // Cache our own sent message so loadMessages() can display it without re-running the ratchet
     if (result.message_id && payload.signal_header) {
         await Signal.cacheDecrypted(CHAT_CONFIG.myUserId, result.message_id, plaintext);
     }
