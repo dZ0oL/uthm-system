@@ -657,7 +657,9 @@ async function loadMessages() {
             }
 
             // Hide messages predating a recovery event — they used old keys and are undecryptable.
-            if (_recoveryCutoff && new Date(msg.timestamp).getTime() < new Date(_recoveryCutoff).getTime()) {
+            // Normalise the MySQL datetime (no TZ) to explicit UTC ISO 8601Z so it matches
+            // _recoveryCutoff which was stored via new Date().toISOString() (always UTC).
+            if (_recoveryCutoff && new Date(msg.timestamp.replace(' ', 'T') + 'Z').getTime() < new Date(_recoveryCutoff).getTime()) {
                 continue;
             }
 
