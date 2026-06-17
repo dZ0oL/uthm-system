@@ -279,10 +279,17 @@ document.getElementById('change-btn').addEventListener('click', async () => {
         const result = await res.json();
         if (!result.success) throw new Error(result.error || 'Password update failed');
 
-        // Wipe local IndexedDB so old Signal sessions and device share are cleared.
-        // The device share re-fetch below (hasShare check) will pick up the new share.
+        // After recovery: clear old message history cache so pre-recovery messages
+        // (encrypted with old keys) don't appear in chat.
+        // Do NOT delete the entire uthm_signal IDB — session.js already ran
+        // _initSignalKeys on page load, registering a fresh SPK and prekeys.
+        // Deleting the DB now would wipe that SPK, causing _regeneratePreKeys to
+        // create a second SPK on the next page, breaking X3DH for any bundle
+        // the peer fetched while the first SPK was active.
+        // Delete uthm_secure so the new device share (from recovery) gets re-fetched
+        // by the hasShare check below.
         if (ACCOUNT_JUST_RECOVERED) {
-            await new Promise(resolve => { const r = indexedDB.deleteDatabase('uthm_signal'); r.onsuccess = r.onerror = () => resolve(); });
+            try { await Signal.clearMessageHistory(); } catch (_) {}
             await new Promise(resolve => { const r = indexedDB.deleteDatabase('uthm_secure'); r.onsuccess = r.onerror = () => resolve(); });
         }
 

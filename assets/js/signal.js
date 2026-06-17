@@ -228,6 +228,23 @@ const Signal = (() => {
         })));
     }
 
+    // Wipe only the local message history caches (decrypted text + file keys).
+    // Called after account recovery so pre-recovery messages (encrypted with old keys)
+    // no longer appear in chat. Cryptographic key material (SPK, prekeys, sessions)
+    // is intentionally preserved — _initSignalKeys already ran on page load and
+    // registered fresh SPK/prekeys; deleting them here would cause a second key
+    // registration on the next page load, invalidating any in-flight bundles.
+    async function clearMessageHistory() {
+        const db     = await openIDB();
+        const stores = ['decrypted', 'file_keys'];
+        await Promise.all(stores.map(store => new Promise((resolve, reject) => {
+            const tx  = db.transaction(store, 'readwrite');
+            const req = tx.objectStore(store).clear();
+            req.onsuccess = () => resolve();
+            req.onerror   = () => reject(req.error);
+        })));
+    }
+
     // ── In-memory identity session ────────────────────────────────
 
     let _session = null;
@@ -596,10 +613,16 @@ const Signal = (() => {
         let session    = await loadPersonalSession(myUserId, peerUserId);
         let pkeyData   = null;
 
-        if (session && peerBundle && peerBundle.spk_id) {
-            // Drop session if peer's SPK changed (new device login / recovery) or if session
-            // pre-dates this tracking field (treat as stale — forces a fresh X3DH).
-            if (!session.peer_spk_id || session.peer_spk_id !== peerBundle.spk_id) {
+        if (session && peerBundle) {
+            // Drop session if the peer's IK or SPK changed.
+            // IK changes on full key reset (SSS account recovery) — this is the primary
+            // guard against sending to a stale session after a peer's account recovery.
+            // SPK changes on routine rotation or new-device login.
+            const ikChanged  = session.peer_ik_pub && peerBundle.ik_dh_public
+                                && session.peer_ik_pub !== peerBundle.ik_dh_public;
+            const spkChanged = peerBundle.spk_id
+                                && (!session.peer_spk_id || session.peer_spk_id !== peerBundle.spk_id);
+            if (ikChanged || spkChanged) {
                 await idbDelete('sessions', `${myUserId}_${peerUserId}`);
                 session = null;
             }
@@ -610,6 +633,7 @@ const Signal = (() => {
             // Pass Bob's SPK as DHr so the initial send_CK is DH-derived (Signal spec requirement)
             session    = await initPersonalSession(x3dh.SK, true, null, peerBundle.spk_public);
             session.peer_spk_id = x3dh.spk_id;
+            session.peer_ik_pub = peerBundle.ik_dh_public;
             pkeyData   = { ik_dh_pub: IK_dh_pub_jwk, ek_pub: x3dh.EK_pub_jwk, spk_id: x3dh.spk_id, opk_id: x3dh.opk_id };
         }
 
@@ -1177,6 +1201,7 @@ const Signal = (() => {
 
         // Identity reset
         clearCryptoState,
+        clearMessageHistory,
 
         // Utilities
         bufToBase64,
