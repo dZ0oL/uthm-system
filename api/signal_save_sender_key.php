@@ -29,7 +29,7 @@ if (!$group_id || !is_array($dists) || count($dists) === 0) {
     exit;
 }
 
-// Verify sender is a member of the group
+// Verify sender is actually a member of the group — prevents spoofing
 $stmt = $pdo->prepare("SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?");
 $stmt->execute([$group_id, $sender_id]);
 if (!$stmt->fetchColumn()) {
@@ -39,6 +39,7 @@ if (!$stmt->fetchColumn()) {
 }
 
 try {
+    // Each distribution is encrypted specifically for one member using their IK public key
     $stmt = $pdo->prepare("
         INSERT INTO signal_sender_keys
             (group_id, sender_id, member_id, encrypted_dist, dist_iv, dist_auth_tag, iteration)

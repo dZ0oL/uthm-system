@@ -1,4 +1,12 @@
 <?php
+// ============================================================
+// api/send_otp.php
+// First step of staff account recovery.
+// Validates the email, generates a 6-digit OTP, saves it with
+// a 10-minute expiry, and emails it via PHPMailer.
+// Does NOT require a login session — called from recover.php.
+// Returns success=true even if email not found (prevents enumeration).
+// ============================================================
 ob_start();
 error_reporting(0);
 ini_set('display_errors', 0);

@@ -1,4 +1,13 @@
 ﻿<?php
+// ============================================================
+// admin/register_staff.php
+// Admin creates a new staff account.
+// Two-phase submission:
+//   Phase 1 — Admin submits the form; server creates the DB row.
+//   Phase 2 — Admin's browser generates ECDH keypair + 5 SSS shares
+//             (via api/register_keys.php), then POSTs crypto_done=1.
+// Temp password is staffId + name (no spaces) — staff must change on first login.
+// ============================================================
 require_once '../config/database.php';
 
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] != 'admin') {
@@ -16,7 +25,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     $staff_id   = trim($_POST['staff_id']   ?? '');
     $email      = trim($_POST['email']      ?? '');
     $department = trim($_POST['department'] ?? '');
-    $is_fetch   = isset($_POST['crypto_done']);
+    $is_fetch   = isset($_POST['crypto_done']); // true on the second (crypto complete) POST
 
     $allowed_departments = ['Finance', 'Payroll', 'Audit', 'HR', 'IT'];
 

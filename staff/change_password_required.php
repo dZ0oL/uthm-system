@@ -1,4 +1,12 @@
 <?php
+// ============================================================
+// staff/change_password_required.php
+// Shown to staff after account recovery when password_change_required=1.
+// Staff sets a new password here; the browser then re-encrypts the
+// private key and all SSS shares with the new password before saving.
+// After completion, _recoveryCutoff is written to localStorage so
+// chat.php knows to hide messages that existed before the recovery.
+// ============================================================
 require_once '../config/database.php';
 
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'staff') {
@@ -6,6 +14,7 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'staff') {
     exit;
 }
 
+// If no forced change is pending, this page shouldn't be open
 if (empty($_SESSION['password_change_required'])) {
     header('Location: dashboard.php');
     exit;
@@ -18,7 +27,7 @@ $stmt = $pdo->prepare("SELECT name, staff_id FROM users WHERE user_id = ?");
 $stmt->execute([$user_id]);
 $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-// Dashboard background queries
+// Dashboard background queries — rendered behind the modal overlay
 $stmt = $pdo->prepare("
     SELECT g.* FROM `groups` g
     JOIN group_members gm ON g.group_id = gm.group_id

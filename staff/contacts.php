@@ -1,4 +1,9 @@
 <?php
+// ============================================================
+// staff/contacts.php
+// Staff directory — lists all active staff with their Signal
+// key status so users can see who is ready for encrypted messaging.
+// ============================================================
 require_once '../config/database.php';
 
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] != 'staff') {
@@ -8,6 +13,7 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] != 'staff') {
 
 $user_id = $_SESSION['user_id'];
 
+// Fetch all other active staff — include key columns so UI can show key setup status
 $stmt = $pdo->prepare("
     SELECT user_id, name, email, staff_id, department, ik_dh_public, ecdh_public_key
     FROM users

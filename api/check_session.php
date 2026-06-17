@@ -1,4 +1,11 @@
 <?php
+// ============================================================
+// api/check_session.php
+// Polled by session.js on every staff/admin page to detect
+// whether the session is still valid. Returns JSON { valid }.
+// Handles two kick reasons: account deactivated and session
+// displaced by a login from another device.
+// ============================================================
 ob_start();
 error_reporting(0);
 ini_set('display_errors', 0);
@@ -7,12 +14,13 @@ ob_clean();
 
 header('Content-Type: application/json');
 
+// No PHP session means the cookie expired or was never set
 if (!isset($_SESSION['user_id']) || !in_array($_SESSION['role'], ['staff', 'admin'])) {
     echo json_encode(['valid' => false, 'reason' => 'no_session']);
     exit;
 }
 
-// Fetch user — check both token AND status separately
+// Fetch current DB state — token and status can change at any time
 $stmt = $pdo->prepare("
     SELECT session_token, status FROM users WHERE user_id = ?
 ");
@@ -24,7 +32,7 @@ if (!$user) {
     exit;
 }
 
-// Check if account was deactivated
+// Admin deactivated the account since this session started
 if ($user['status'] === 'inactive') {
     session_destroy();
     echo json_encode([
@@ -35,7 +43,7 @@ if ($user['status'] === 'inactive') {
     exit;
 }
 
-// Check session token mismatch
+// Token mismatch means another device logged in and overwrote the DB token (single-device enforcement)
 if ($user['session_token'] !== ($_SESSION['session_token'] ?? '')) {
     session_destroy();
     echo json_encode([

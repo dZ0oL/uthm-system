@@ -27,7 +27,7 @@ if (empty($data['spk_id']) || empty($data['spk_public']) || empty($data['spk_sig
     exit;
 }
 
-// Determine if this is a full registration (includes IK) or just a prekey refresh
+// Full registration includes IK (identity keys); prekey refresh only updates SPK+OPKs
 $hasIK = !empty($data['ik_dh_public']) && !empty($data['encrypted_ik_dh']);
 
 try {
@@ -71,9 +71,9 @@ try {
         ")->execute([$data['spk_id'], $data['spk_public'], $data['spk_signature'], $user_id]);
     }
 
-    // Save one-time prekeys
+    // Save one-time prekeys — each OPK is used exactly once for forward secrecy
     if (!empty($data['opk_keys']) && is_array($data['opk_keys'])) {
-        // Remove old unused prekeys for this user first
+        // Clear stale unused prekeys before inserting the fresh batch
         $pdo->prepare("DELETE FROM signal_prekeys WHERE user_id = ? AND used = 0")->execute([$user_id]);
 
         $stmt = $pdo->prepare("

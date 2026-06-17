@@ -1,4 +1,10 @@
 <?php
+// ============================================================
+// api/get_notifications.php
+// Returns unread message counts per conversation for the
+// current staff user. Used by the notification badge on the
+// sidebar. Groups results by personal and group chats.
+// ============================================================
 ob_start();
 error_reporting(0);
 ini_set('display_errors', 0);

@@ -1,7 +1,10 @@
 <?php
-/**
- * staff/profile.php
- */
+// ============================================================
+// staff/profile.php
+// Shows the logged-in staff member's account info, key status,
+// and recent audit log entries. Key status indicates whether
+// Signal keys (IK + SPK) are registered for this device.
+// ============================================================
 require_once '../config/database.php';
 
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'staff') {
@@ -11,6 +14,7 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'staff') {
 
 $user_id = $_SESSION['user_id'];
 
+// Fetch profile fields including key status columns
 $stmt = $pdo->prepare("
     SELECT user_id, name, email, staff_id, department,
            created_at, ecdh_public_key, key_hash,
@@ -20,6 +24,7 @@ $stmt = $pdo->prepare("
 $stmt->execute([$user_id]);
 $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
+// Use second-most-recent login as "last login" (most recent is the current session)
 $stmt = $pdo->prepare("
     SELECT timestamp FROM audit_logs
     WHERE user_id = ? AND action = 'Login'
@@ -29,6 +34,7 @@ $stmt->execute([$user_id]);
 $logins     = $stmt->fetchAll(PDO::FETCH_ASSOC);
 $last_login = isset($logins[1]) ? $logins[1]['timestamp'] : ($logins[0]['timestamp'] ?? null);
 
+// Signal keys set = X3DH-capable; false means IDB was cleared and needs setup
 $has_signal_keys = !empty($user['ik_dh_public']) && !empty($user['spk_id']);
 
 $page_title = 'My Profile';

@@ -1,8 +1,14 @@
 <?php
-/**
- * staff/get_messages.php
- * AJAX endpoint to fetch new messages without page reload
- */
+// ============================================================
+// staff/get_messages.php
+// Legacy polling endpoint for incremental message fetch.
+// NOTE: The decrypt_message() function below is legacy code
+// from an earlier prototype — it uses server-side AES-CBC with
+// a hardcoded key. In the current system, all real encryption
+// is E2E (browser-side via Web Crypto API). This endpoint is
+// kept for backward compatibility but is no longer the primary
+// message delivery path — chat.php uses api/get_messages.php instead.
+// ============================================================
 require_once '../config/database.php';
 
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] != 'staff') {
@@ -10,7 +16,8 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] != 'staff') {
     exit;
 }
 
-// Decryption function
+// LEGACY: server-side decrypt with hardcoded key — only works on old-format messages
+// Current messages are E2E encrypted and cannot be decrypted server-side
 function decrypt_message($encrypted_message) {
     $key = 'UTHM_SECRET_KEY_2025';
     try {

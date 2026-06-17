@@ -23,6 +23,8 @@ if (!$group_id || !$sender_id) {
 }
 
 try {
+    // Fetch the sender key distribution encrypted specifically for this member
+    // Each member gets their own row — the sender key chain is wrapped per-member using ECDH
     $stmt = $pdo->prepare("
         SELECT encrypted_dist, dist_iv, dist_auth_tag, iteration
         FROM signal_sender_keys
@@ -32,6 +34,7 @@ try {
     $row = $stmt->fetch();
 
     if (!$row) {
+        // No distribution yet — browser will request one from the sender
         echo json_encode(['success' => true, 'distribution' => null]);
         exit;
     }

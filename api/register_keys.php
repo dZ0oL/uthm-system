@@ -1,4 +1,15 @@
 <?php
+// ============================================================
+// api/register_keys.php
+// Called by admin's browser when registering a new staff account.
+// Stores the staff's ECDH key pair (public + password-encrypted private)
+// and distributes all 5 SSS shares across the two databases:
+//   Share 1 → sss_device_shares (one-time pickup by staff browser)
+//   Share 2 → sss_shares_secondary (main DB)
+//   Share 3 → admin_vault_shares (secure DB)
+//   Share 4 → backup_shares (secure DB)
+//   Share 5 → sss_shares (main DB)
+// ============================================================
 ob_start();
 error_reporting(0);
 ini_set('display_errors', 0);

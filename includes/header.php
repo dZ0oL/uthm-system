@@ -1,9 +1,16 @@
 <?php
-// ===================
-// Includes/header.php
-// ===================
+// ============================================================
+// includes/header.php
+// Shared header included on every page. Responsibilities:
+//   1. Compute $base (relative path prefix for assets and links)
+//   2. Enforce forced password-change redirects before HTML output
+//   3. Pre-fetch unread notification counts for the topbar bell
+//   4. Emit the HTML <head> (CSS, JS), the sidebar nav, and the topbar
+//   5. Inject window.__APP_BASE, __API_BASE, __STAFF_USER_ID globals
+//      needed by crypto.js / session.js / notifications.js
+// ============================================================
 
-// Simple base path — works for all pages in admin/ staff/ or root
+// $base = '' for root pages, '../' for admin/ and staff/ subdirectories
 $base = '';
 $self = $_SERVER['PHP_SELF'];
 if (strpos($self, '/admin/') !== false || strpos($self, '/staff/') !== false) {
