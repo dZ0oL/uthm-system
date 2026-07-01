@@ -10,7 +10,6 @@ FEATURES
 
 SECURITY
 
-
 End-to-End Encryption — Signal Protocol implementation (X3DH key exchange + Double Ratchet Algorithm) for personal chats
 Group Encryption — Sender Key Protocol for scalable group message encryption
 Encryption at Rest — AES-256-GCM for all stored messages and files
@@ -20,9 +19,7 @@ Account Recovery — Shamir's Secret Sharing (3-of-5 threshold scheme) for crypt
 OTP Recovery — Time-limited one-time password via email for account access
 Audit Logging — Full activity trail for administrative oversight
 
-
 MESSAGING
-
 
 Real-time message delivery via Server-Sent Events (SSE)
 Personal (1-to-1) and group chat support
@@ -30,16 +27,12 @@ Encrypted file sharing with random hex blob storage
 Message read receipts
 Session-based device management and termination
 
-
 ADMINISTRATION
-
 
 Role-based access control (Admin / Staff)
 User management dashboard
 Audit log viewer
 System health monitoring
-
-
 
 TECH STACK
 
@@ -62,7 +55,6 @@ Each group member holds a Sender Key. Messages are encrypted once per sender and
 Key Recovery — Shamir's Secret Sharing
 
 The user's master key is split into 5 shares using a (3-of-5) threshold scheme. Any 3 shares are sufficient to reconstruct the key, eliminating single points of failure in account recovery.
-
 
 Live Demo
 
