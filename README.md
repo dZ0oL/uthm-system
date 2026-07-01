@@ -45,22 +45,6 @@ TECH STACK
 
 LayerTechnologyBackendPHP 8.xFrontendVanilla JavaScript (ES6+), Bootstrap 5.3DatabaseMySQL 8.0CryptographyWeb Crypto API, Signal Protocol (custom implementation)Real-timeServer-Sent Events (SSE)EmailPHPMailer + Gmail SMTPServerApache on Ubuntu 24.04 LTS (Hostinger KVM VPS)Version ControlGit / GitHub
 
-
-SYSTEM ARCHITECTURE
-
-├── admin/              # Admin panel (user management, audit logs)
-├── api/                # Backend API endpoints (messaging, auth, SSE)
-├── assets/             # Static assets (CSS, JS, images)
-├── config/             # Configuration files (DB connection — gitignored)
-├── includes/           # Shared PHP components (session, helpers)
-├── staff/              # Staff-facing UI (chat, dashboard)
-├── uploads/encrypted/  # AES-256-GCM encrypted file blobs
-├── vendor/phpmailer/   # PHPMailer library
-├── index.php           # Entry point / login
-├── recover.php         # Account recovery flow
-└── setup_signal.php    # Signal Protocol key initialisation
-
-
 CRYPTOGRAPHIC DESIGN
 
 Personal Chat — Double Ratchet Algorithm
